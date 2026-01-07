@@ -1,0 +1,198 @@
+# ============================================================
+# ci-preflight sh-subset EBNF
+# ============================================================
+# - Recognition-oriented grammar (not executable semantics)
+# - Unknown statements are produced by parser recovery, not grammar
+# - Background execution (&) is recognized structurally
+# ============================================================
+
+# ----------------------------
+# Program structure
+# ----------------------------
+
+program         ::= list? EOF ;
+
+list            ::= and_or (separator and_or)* separator? ;
+
+separator       ::= sep_op ws* ;
+sep_op          ::= ";" | "&" | NEWLINE ;
+newline         ::= NEWLINE+ ;
+
+ws              ::= (WHITESPACE | COMMENT)* ;
+
+# ----------------------------
+# Logical composition
+# ----------------------------
+
+and_or          ::= pipeline (and_or_op ws* pipeline)* ;
+and_or_op       ::= "&&" | "||" ;
+
+pipeline        ::= pipe_item (pipe_op ws* pipe_item)* ;
+pipe_op         ::= "|" ;
+pipe_item       ::= command ;
+
+# ----------------------------
+# Commands
+# ----------------------------
+
+command         ::= simple_command
+                  | compound_command
+                  | function_def
+                  | subshell
+                  | group ;
+
+# ----------------------------
+# Simple command
+# ----------------------------
+
+simple_command ::= assignment_only
+                 | command_with_name ;
+
+assignment_only ::= assignment+ ;
+
+command_with_name ::= prefix_part* cmd_part suffix_part* ;
+
+cmd_part        ::= WORD WORD* ;               # at least one WORD required
+
+prefix_part     ::= assignment | redirection ;
+suffix_part     ::= assignment | redirection | WORD ;
+
+assignment      ::= NAME "=" WORD ;
+
+
+# ============================================================
+# Redirection (POSIX sh)
+# ============================================================
+
+redirection
+    ::= io_redirect
+     |  heredoc
+     ;
+
+# ----------------------------
+# IO redirect
+# ----------------------------
+
+io_redirect
+    ::= io_number? io_operator WORD
+     |  io_number? io_operator FD
+     |  io_number? io_operator "-"
+     ;
+
+io_number
+    ::= DIGITS ;
+
+# ----------------------------
+# Operators
+# ----------------------------
+
+io_operator
+    ::= ">"      # output
+     |  ">>"     # output append
+     |  "<"      # input
+     |  "<>"     # input/output (rare but POSIX)
+     |  ">&"     # output fd duplication
+     |  "<&"     # input fd duplication
+     |  ">|"     # clobber (POSIX, noclobber override)
+     ;
+
+FD ::= DIGITS ;
+
+# ----------------------------
+# Heredoc
+# ----------------------------
+
+heredoc
+    ::= io_number? heredoc_op ws* heredoc_delim heredoc_body
+     ;
+
+heredoc_op
+    ::= "<<"
+     |  "<<-"
+     ;
+
+heredoc_delim
+    ::= WORD
+     ;
+
+# lexer-defined (newline-sensitive, deferred)
+heredoc_body
+    ::= HEREDOC_BODY ;
+
+
+# ----------------------------
+# Compound commands (recognized, not executed)
+# ----------------------------
+
+compound_command ::= if_clause
+                   | for_clause
+                   | while_clause ;
+
+if_clause        ::= "if" ws* list ws* "then" ws* list
+                     ws* elif_clause*
+                     ws* else_clause?
+                     ws* "fi" ;
+
+elif_clause      ::= "elif" ws* list ws* "then" ws* list ;
+else_clause      ::= "else" ws* list ;
+
+for_clause       ::= "for" ws* NAME ws* for_in_clause?
+                     ws* sep_op ws*
+                     "do" ws* list ws* "done" ;
+
+for_in_clause    ::= "in" ws* WORD* ;
+
+while_clause     ::= while_kw ws* list
+                     ws* sep_op ws*
+                     "do" ws* list ws* "done" ;
+
+while_kw         ::= "while" | "until" ;
+
+# ----------------------------
+# Functions and grouping
+# ----------------------------
+
+function_def     ::= NAME "(" ")" ws* function_body ;
+
+function_body    ::= compound_command
+                   | group
+                   | subshell ;
+
+subshell         ::= "(" ws* list ws* ")" ;
+group            ::= "{" ws* list ws* "}" ;
+
+# ----------------------------
+# Lexical tokens (simplified)
+# ----------------------------
+
+NAME             ::= (LETTER | "_") (LETTER | DIGIT | "_")* ;
+LETTER           ::= "A"…"Z" | "a"…"z" ;
+DIGIT            ::= "0"…"9" ;
+
+WORD             ::= WORD_TOKEN ;               # lexer-defined:
+                                               # non-empty, non-whitespace,
+                                               # excluding separators
+
+COMMENT          ::= "#" COMMENT_CHAR* (NEWLINE | EOF) ;
+COMMENT_CHAR     ::= <any char except NEWLINE> ;
+
+WHITESPACE       ::= " " | "\t" ;
+
+NEWLINE          ::= "\n" ;
+EOF              ::= <end of input> ;
+
+# ----------------------------
+# Notes (non-grammar)
+# ----------------------------
+# - COMMENT is treated as whitespace (ws).
+# - HEREDOC_BODY is lexed after seeing heredoc_op + delimiter.
+# - "<<-" allows leading TAB stripping in the lexer.
+# - Heredoc body ends when a line equals the delimiter.
+# - No parsing is performed inside heredoc bodies.
+# - Unknown constructs are generated by parser recovery.
+# - Recovery terminators include:
+#     ;  &  NEWLINE  &&  ||  |
+#     then  do  fi  done  elif  else
+#     )  }
+# - Background execution ('&') is preserved in AST and
+#   treated as a semantic red flag during evaluation.

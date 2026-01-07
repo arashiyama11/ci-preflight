@@ -1,0 +1,16 @@
+[package]
+name = "ci-preflight"
+version = "0.1.0"
+edition = "2024"
+description = "A lightweight preflight checker for GitHub Actions"
+license = "MIT"
+
+[dependencies]
+color-eyre = "0.6"
+
+thiserror = "2.0"
+yaml-rust2 = "0.11.0"
+log = "0.4.29"
+
+[dev-dependencies]
+pretty_assertions = "1"
