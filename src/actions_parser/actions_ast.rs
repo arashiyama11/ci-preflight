@@ -1,8 +1,5 @@
-use super::sh_parser::sh_ast::ShAstNode;
+use super::arena::AstId;
 use std::collections::BTreeMap;
-
-#[derive(Clone, PartialEq, PartialOrd, Debug, Eq, Ord, Hash)]
-pub struct ActionsAstId(pub u32);
 
 #[derive(Clone, PartialEq, PartialOrd, Debug, Eq, Ord, Hash)]
 pub enum ScalarValue {
@@ -85,8 +82,8 @@ pub enum ActionsAst {
     Workflow {
         name: Option<String>,
         run_name: Option<String>,
-        jobs: Vec<ActionsAstId>,
-        on: ActionsAstId,
+        jobs: Vec<AstId>,
+        on: AstId,
         env: Option<BTreeMap<String, String>>,
         defaults: Option<Defaults>,
         permissions: Option<Permissions>,
@@ -98,7 +95,7 @@ pub enum ActionsAst {
     Job {
         name: Option<String>,
         runs_on: RunsOn,
-        steps: Vec<ActionsAstId>,
+        steps: Vec<AstId>,
         needs: Option<StringOrArray>,
         env: Option<BTreeMap<String, String>>,
         defaults: Option<Defaults>,
@@ -111,7 +108,7 @@ pub enum ActionsAst {
         continue_on_error: Option<ScalarValue>,
     },
     RunStep {
-        run: String,
+        run: AstId,
         name: Option<String>,
         id: Option<String>,
         if_cond: Option<ScalarValue>,
@@ -131,5 +128,5 @@ pub enum ActionsAst {
         timeout_minutes: Option<ScalarValue>,
         continue_on_error: Option<ScalarValue>,
     },
-    Sh(ShAstNode),
+    Sh(AstId),
 }

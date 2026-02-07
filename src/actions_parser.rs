@@ -1,8 +1,21 @@
 mod actions_ast;
 mod parser;
 mod sh_parser;
-mod source_map;
+pub(crate) mod source_map;
 
 mod arena;
 
-fn parse_actions_yaml() {}
+use crate::actions_parser::arena::{AstArena, AstId};
+use crate::actions_parser::parser::ActionsParseError;
+use crate::actions_parser::source_map::{SourceId, SourceMap};
+
+pub fn parse_actions_yaml(
+    source_map: &mut SourceMap,
+    source_id: &SourceId,
+) -> Result<(AstId, AstArena), ActionsParseError> {
+    parser::parse_actions_yaml(source_map, source_id)
+}
+
+pub fn format_actions_tree(arena: &AstArena, root: &AstId) -> String {
+    parser::format_actions_tree(arena, root)
+}

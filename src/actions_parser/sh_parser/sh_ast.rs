@@ -1,13 +1,12 @@
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
-pub struct ShNodeId(pub u32);
+use crate::actions_parser::arena::AstId;
 
 #[derive(Debug, Clone)]
 pub struct ShProgram {
-    pub list: ShNodeId,
+    pub list: AstId,
 }
 #[derive(Debug, Clone)]
 pub struct ListItem {
-    pub body: ShNodeId,
+    pub body: AstId,
     pub sep: SeparatorKind,
 }
 
@@ -20,7 +19,7 @@ pub enum SeparatorKind {
 #[derive(Debug, Clone)]
 pub struct AndOrItem {
     pub op: AndOrOp,
-    pub body: ShNodeId,
+    pub body: AstId,
 }
 
 #[derive(Debug, Clone)]
@@ -33,44 +32,44 @@ pub enum AndOrOp {
 pub enum ShAstNode {
     List(Vec<ListItem>),
     AndOr {
-        first: ShNodeId,
+        first: AstId,
         rest: Vec<AndOrItem>,
     },
     Pipeline {
-        first: ShNodeId,
-        rest: Vec<ShNodeId>,
+        first: AstId,
+        rest: Vec<AstId>,
     },
     SimpleCommand {
-        assignments: Vec<ShNodeId>,
-        argv: Vec<ShNodeId>,
-        redirs: Vec<ShNodeId>,
+        assignments: Vec<AstId>,
+        argv: Vec<AstId>,
+        redirs: Vec<AstId>,
     },
 
     If {
-        cond: ShNodeId,
-        then_part: ShNodeId,
-        else_part: Option<ShNodeId>,
+        cond: AstId,
+        then_part: AstId,
+        else_part: Option<AstId>,
     },
 
     While {
-        cond: ShNodeId,
-        body: ShNodeId,
+        cond: AstId,
+        body: AstId,
     },
 
     For {
-        var: ShNodeId,
-        items: Vec<ShNodeId>,
-        body: ShNodeId,
+        var: AstId,
+        items: Vec<AstId>,
+        body: AstId,
     },
     FunctionDef {
-        name: ShNodeId,
-        body: ShNodeId,
+        name: AstId,
+        body: AstId,
     },
     Subshell {
-        body: ShNodeId,
+        body: AstId,
     },
     Group {
-        body: ShNodeId,
+        body: AstId,
     },
 
     Word(String),

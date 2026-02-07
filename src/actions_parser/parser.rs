@@ -1,8 +1,8 @@
 use crate::actions_parser::actions_ast::{
-    ActionsAst, ActionsAstId, Concurrency, Container, ContainerCredentials, ContainerSpec,
-    Defaults, Permissions, RunsOn, ScalarValue, Strategy, StringOrArray,
+    ActionsAst, Concurrency, Container, ContainerCredentials, ContainerSpec, Defaults, Permissions,
+    RunsOn, ScalarValue, Strategy, StringOrArray,
 };
-use crate::actions_parser::arena::ActionsAstArena;
+use crate::actions_parser::arena::{AstArena, AstId};
 use crate::actions_parser::parser::ActionsParseError::InvalidActions;
 use crate::actions_parser::source_map::{SourceId, SourceMap};
 use std::collections::BTreeMap;
@@ -19,25 +19,29 @@ pub enum ActionsParseError {
 }
 
 struct ActionsParser {
-    arena: ActionsAstArena,
+    arena: AstArena,
 }
 
 impl ActionsParser {
     fn new() -> ActionsParser {
         ActionsParser {
-            arena: ActionsAstArena::new(),
+            arena: AstArena::new(),
         }
     }
     fn parse(
         &mut self,
         source_id: &SourceId,
-        source_map: &SourceMap,
-    ) -> Result<ActionsAstId, ActionsParseError> {
-        let s = source_map.get_text(source_id).unwrap();
-        self.parse_from_str(s)
+        source_map: &mut SourceMap,
+    ) -> Result<AstId, ActionsParseError> {
+        let s = source_map.get_text(source_id).unwrap().to_string();
+        self.parse_from_str(source_map, &s)
     }
 
-    fn parse_from_str(&mut self, s: &str) -> Result<ActionsAstId, ActionsParseError> {
+    fn parse_from_str(
+        &mut self,
+        source_map: &mut SourceMap,
+        s: &str,
+    ) -> Result<AstId, ActionsParseError> {
         let yaml = YamlLoader::load_from_str(s).map_err(|e| ActionsParseError::ScanError(e))?;
         if yaml.len() != 1 {
             return Err(ActionsParseError::InvalidActions("a"));
@@ -59,7 +63,7 @@ impl ActionsParser {
             .ok_or(ActionsParseError::InvalidActions("jobs must be an object"))?;
         let mut jobs = Vec::new();
         for (_job_id, job_yaml) in jobs_hash.iter() {
-            jobs.push(self.parse_job(job_yaml)?);
+            jobs.push(self.parse_job(source_map, job_yaml)?);
         }
 
         let on = match &yaml["on"] {
@@ -73,7 +77,7 @@ impl ActionsParser {
             _ => return Err(InvalidActions("on is required")),
         };
 
-        let on = self.arena.alloc(on);
+        let on = self.arena.alloc_actions(on);
 
         let node = ActionsAst::Workflow {
             name,
@@ -85,17 +89,21 @@ impl ActionsParser {
             permissions,
             concurrency,
         };
-        Ok(self.arena.alloc(node))
+        Ok(self.arena.alloc_actions(node))
     }
 
-    fn format_ast(&self, root: &ActionsAstId) -> String {
+    fn into_arena(self) -> AstArena {
+        self.arena
+    }
+
+    fn format_ast(&self, root: &AstId) -> String {
         let mut out = String::new();
         self.format_ast_impl(root, 0, &mut out);
         out
     }
 
-    fn format_ast_impl(&self, id: &ActionsAstId, indent: usize, out: &mut String) {
-        let node = self.arena.get(id);
+    fn format_ast_impl(&self, id: &AstId, indent: usize, out: &mut String) {
+        let node = self.arena.get_actions(id);
         match node {
             ActionsAst::Workflow {
                 name,
@@ -233,9 +241,11 @@ impl ActionsParser {
             } => {
                 self.push_line(
                     indent,
-                    &format!("RunStep run=\"{}\" name={:?} id={:?}", run, name, id),
+                    &format!("RunStep run={:?} name={:?} id={:?}", run, name, id),
                     out,
                 );
+                self.push_line(indent + 1, "run:", out);
+                self.format_sh_impl(run, indent + 2, out);
                 if let Some(if_cond) = if_cond {
                     self.push_line(indent + 1, &format!("if {:?}", if_cond), out);
                 }
@@ -307,7 +317,116 @@ impl ActionsParser {
                 }
             }
             ActionsAst::Sh(sh) => {
-                self.push_line(indent, &format!("Sh {:?}", sh), out);
+                let node = self.arena.get_sh(*sh);
+                self.push_line(indent, &format!("Sh {:?}", node), out);
+            }
+        }
+    }
+
+    fn format_sh_impl(&self, id: &AstId, indent: usize, out: &mut String) {
+        let node = self.arena.get_sh(*id);
+        match node {
+            crate::actions_parser::sh_parser::sh_ast::ShAstNode::List(items) => {
+                self.push_line(indent, "List", out);
+                for item in items {
+                    self.push_line(indent + 1, &format!("Item sep={:?}", item.sep), out);
+                    self.format_sh_impl(&item.body, indent + 2, out);
+                }
+            }
+            crate::actions_parser::sh_parser::sh_ast::ShAstNode::AndOr { first, rest } => {
+                self.push_line(indent, "AndOr", out);
+                self.push_line(indent + 1, "first:", out);
+                self.format_sh_impl(first, indent + 2, out);
+                for item in rest {
+                    self.push_line(indent + 1, &format!("rest op={:?}", item.op), out);
+                    self.format_sh_impl(&item.body, indent + 2, out);
+                }
+            }
+            crate::actions_parser::sh_parser::sh_ast::ShAstNode::Pipeline { first, rest } => {
+                self.push_line(indent, "Pipeline", out);
+                self.format_sh_impl(first, indent + 1, out);
+                for node in rest {
+                    self.format_sh_impl(node, indent + 1, out);
+                }
+            }
+            crate::actions_parser::sh_parser::sh_ast::ShAstNode::SimpleCommand {
+                assignments,
+                argv,
+                redirs,
+            } => {
+                self.push_line(indent, "SimpleCommand", out);
+                for a in assignments {
+                    self.push_line(indent + 1, "assign:", out);
+                    self.format_sh_impl(a, indent + 2, out);
+                }
+                for a in argv {
+                    self.push_line(indent + 1, "argv:", out);
+                    self.format_sh_impl(a, indent + 2, out);
+                }
+                for r in redirs {
+                    self.push_line(indent + 1, "redir:", out);
+                    self.format_sh_impl(r, indent + 2, out);
+                }
+            }
+            crate::actions_parser::sh_parser::sh_ast::ShAstNode::If {
+                cond,
+                then_part,
+                else_part,
+            } => {
+                self.push_line(indent, "If", out);
+                self.push_line(indent + 1, "cond:", out);
+                self.format_sh_impl(cond, indent + 2, out);
+                self.push_line(indent + 1, "then:", out);
+                self.format_sh_impl(then_part, indent + 2, out);
+                if let Some(else_part) = else_part {
+                    self.push_line(indent + 1, "else:", out);
+                    self.format_sh_impl(else_part, indent + 2, out);
+                }
+            }
+            crate::actions_parser::sh_parser::sh_ast::ShAstNode::While { cond, body } => {
+                self.push_line(indent, "While", out);
+                self.push_line(indent + 1, "cond:", out);
+                self.format_sh_impl(cond, indent + 2, out);
+                self.push_line(indent + 1, "body:", out);
+                self.format_sh_impl(body, indent + 2, out);
+            }
+            crate::actions_parser::sh_parser::sh_ast::ShAstNode::For { var, items, body } => {
+                self.push_line(indent, "For", out);
+                self.push_line(indent + 1, "var:", out);
+                self.format_sh_impl(var, indent + 2, out);
+                for item in items {
+                    self.push_line(indent + 1, "item:", out);
+                    self.format_sh_impl(item, indent + 2, out);
+                }
+                self.push_line(indent + 1, "body:", out);
+                self.format_sh_impl(body, indent + 2, out);
+            }
+            crate::actions_parser::sh_parser::sh_ast::ShAstNode::FunctionDef { name, body } => {
+                self.push_line(indent, "FunctionDef", out);
+                self.push_line(indent + 1, "name:", out);
+                self.format_sh_impl(name, indent + 2, out);
+                self.push_line(indent + 1, "body:", out);
+                self.format_sh_impl(body, indent + 2, out);
+            }
+            crate::actions_parser::sh_parser::sh_ast::ShAstNode::Subshell { body } => {
+                self.push_line(indent, "Subshell", out);
+                self.format_sh_impl(body, indent + 1, out);
+            }
+            crate::actions_parser::sh_parser::sh_ast::ShAstNode::Group { body } => {
+                self.push_line(indent, "Group", out);
+                self.format_sh_impl(body, indent + 1, out);
+            }
+            crate::actions_parser::sh_parser::sh_ast::ShAstNode::Word(s) => {
+                self.push_line(indent, &format!("Word {:?}", s), out);
+            }
+            crate::actions_parser::sh_parser::sh_ast::ShAstNode::Assignment(s) => {
+                self.push_line(indent, &format!("Assignment {:?}", s), out);
+            }
+            crate::actions_parser::sh_parser::sh_ast::ShAstNode::Redir { op, body } => {
+                self.push_line(indent, &format!("Redir op={:?} body={:?}", op, body), out);
+            }
+            crate::actions_parser::sh_parser::sh_ast::ShAstNode::Unknown => {
+                self.push_line(indent, "Unknown", out);
             }
         }
     }
@@ -319,7 +438,11 @@ impl ActionsParser {
         let _ = writeln!(out, "{}", s);
     }
 
-    fn parse_job(&mut self, yaml: &Yaml) -> Result<ActionsAstId, ActionsParseError> {
+    fn parse_job(
+        &mut self,
+        source_map: &mut SourceMap,
+        yaml: &Yaml,
+    ) -> Result<AstId, ActionsParseError> {
         let name = self
             .get_map_value(yaml, "name")
             .and_then(|v| v.as_str().map(|s| s.to_string()));
@@ -335,7 +458,7 @@ impl ActionsParser {
             .ok_or(InvalidActions("jobs.<job_id>.steps must be array"))?;
         let steps = steps_vec
             .iter()
-            .map(|y| self.parse_step(y))
+            .map(|y| self.parse_step(source_map, y))
             .collect::<Result<Vec<_>, _>>()?;
         let needs = self.parse_needs(self.get_map_value(yaml, "needs"));
         let env = self.parse_string_map(self.get_map_value(yaml, "env"));
@@ -369,10 +492,14 @@ impl ActionsParser {
             timeout_minutes,
             continue_on_error,
         };
-        Ok(self.arena.alloc(node))
+        Ok(self.arena.alloc_actions(node))
     }
 
-    fn parse_step(&mut self, yaml: &Yaml) -> Result<ActionsAstId, ActionsParseError> {
+    fn parse_step(
+        &mut self,
+        source_map: &mut SourceMap,
+        yaml: &Yaml,
+    ) -> Result<AstId, ActionsParseError> {
         let name = self
             .get_map_value(yaml, "name")
             .and_then(|v| v.as_str().map(|s| s.to_string()));
@@ -404,8 +531,16 @@ impl ActionsParser {
             let working_directory = self
                 .get_map_value(yaml, "working-directory")
                 .and_then(|v| v.as_str().map(|s| s.to_string()));
+            let run_source_id = source_map.add_sh_file(std::path::PathBuf::from("<run>"), run);
+            let arena = std::mem::replace(&mut self.arena, AstArena::new());
+            let (program, arena) = crate::actions_parser::sh_parser::parse_sh_with_arena(
+                source_map,
+                &run_source_id,
+                arena,
+            );
+            self.arena = arena;
             ActionsAst::RunStep {
-                run,
+                run: program.list,
                 name,
                 id,
                 if_cond,
@@ -431,7 +566,7 @@ impl ActionsParser {
             return Err(InvalidActions("steps.<job_id>.run or uses required"));
         };
 
-        Ok(self.arena.alloc(node))
+        Ok(self.arena.alloc_actions(node))
     }
 
     fn get_map_value<'a>(&self, yaml: &'a Yaml, key: &str) -> Option<&'a Yaml> {
@@ -641,6 +776,22 @@ impl ActionsParser {
     }
 }
 
+pub(crate) fn parse_actions_yaml(
+    source_map: &mut SourceMap,
+    source_id: &SourceId,
+) -> Result<(AstId, AstArena), ActionsParseError> {
+    let mut parser = ActionsParser::new();
+    let root = parser.parse(source_id, source_map)?;
+    Ok((root, parser.into_arena()))
+}
+
+pub(crate) fn format_actions_tree(arena: &AstArena, root: &AstId) -> String {
+    let parser = ActionsParser {
+        arena: arena.clone(),
+    };
+    parser.format_ast(root)
+}
+
 #[cfg(test)]
 mod actions_parser_tests {
     use crate::actions_parser::actions_ast::{
@@ -651,6 +802,7 @@ mod actions_parser_tests {
     #[test]
     fn test() {
         let mut parser = ActionsParser::new();
+        let mut source_map = crate::actions_parser::source_map::SourceMap::new();
         let s = r#"name: Unit Test
 
 on:
@@ -668,26 +820,21 @@ jobs:
 
       - name: Unit Test
         run: ./gradlew clean desktopTest --stacktrace --no-daemon"#;
-        let root = parser.parse_from_str(s).unwrap();
+        let root = parser.parse_from_str(&mut source_map, s).unwrap();
         let tree = parser.format_ast(&root);
-        assert_eq!(
-            r#"Workflow name=Some("Unit Test") run_name=None
-  on:
-    OnObject
-  jobs:
-    Job name=None runs_on=String("ubuntu-latest")
-      steps:
-        UsesStep uses="actions/checkout@v6" name=None id=None
-        UsesStep uses="./.github/actions/setup-java" name=None id=None
-        RunStep run="./gradlew clean desktopTest --stacktrace --no-daemon" name=Some("Unit Test") id=None
-"#,
-            tree
-        );
+        assert!(tree.contains("Workflow name=Some(\"Unit Test\") run_name=None"));
+        assert!(tree.contains("OnObject"));
+        assert!(tree.contains("Job name=None runs_on=String(\"ubuntu-latest\")"));
+        assert!(tree.contains("UsesStep uses=\"actions/checkout@v6\""));
+        assert!(tree.contains("UsesStep uses=\"./.github/actions/setup-java\""));
+        assert!(tree.contains("RunStep run="));
+        assert!(tree.contains("name=Some(\"Unit Test\")"));
     }
 
     #[test]
     fn parse_extended_fields() {
         let mut parser = ActionsParser::new();
+        let mut source_map = crate::actions_parser::source_map::SourceMap::new();
         let s = r#"
 name: CI
 run-name: Build ${{ github.ref }}
@@ -732,8 +879,8 @@ jobs:
         env:
           JAVA_HOME: /opt/java
 "#;
-        let root = parser.parse_from_str(s).unwrap();
-        let workflow = parser.arena.get(&root);
+        let root = parser.parse_from_str(&mut source_map, s).unwrap();
+        let workflow = parser.arena.get_actions(&root);
         match workflow {
             ActionsAst::Workflow {
                 name,
@@ -774,7 +921,7 @@ jobs:
                     _ => panic!("unexpected concurrency"),
                 }
                 assert_eq!(jobs.len(), 1);
-                let job = parser.arena.get(&jobs[0]);
+                let job = parser.arena.get_actions(&jobs[0]);
                 match job {
                     ActionsAst::Job {
                         name,

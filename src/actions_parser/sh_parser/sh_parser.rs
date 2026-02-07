@@ -1,8 +1,6 @@
-use super::sh_ast::{AndOrItem, AndOrOp, ListItem, SeparatorKind, ShAstNode, ShNodeId, ShProgram};
-use super::{
-    arena::ShAstArena,
-    sh_token::{ShToken, ShTokenKind, WordKind},
-};
+use super::sh_ast::{AndOrItem, AndOrOp, ListItem, SeparatorKind, ShAstNode, ShProgram};
+use super::sh_token::{ShToken, ShTokenKind, WordKind};
+use crate::actions_parser::arena::{AstArena, AstId};
 use thiserror::Error;
 
 #[derive(Error, Debug)]
@@ -17,7 +15,7 @@ pub enum ParseError {
 pub struct ShParser {
     pub input: Vec<ShToken>,
     pub src: String,
-    pub arena: ShAstArena,
+    pub arena: AstArena,
     pos: usize,
     errors: Vec<ParseError>,
 }
@@ -28,7 +26,17 @@ impl ShParser {
             input: tokens,
             src,
             pos: 0,
-            arena: ShAstArena::new(),
+            arena: AstArena::new(),
+            errors: vec![],
+        }
+    }
+
+    pub fn new_with_arena(tokens: Vec<ShToken>, src: String, arena: AstArena) -> ShParser {
+        ShParser {
+            input: tokens,
+            src,
+            pos: 0,
+            arena,
             errors: vec![],
         }
     }
@@ -101,7 +109,7 @@ impl ShParser {
         &mut self,
         end_words: &[&str],
         end_tokens: &[ShTokenKind],
-    ) -> Result<ShNodeId, ParseError> {
+    ) -> Result<AstId, ParseError> {
         let mut items: Vec<ListItem> = vec![];
         let mut should_break = false;
 
@@ -172,7 +180,7 @@ impl ShParser {
         }
 
         let node = ShAstNode::List(items);
-        Ok(self.arena.alloc(node))
+        Ok(self.arena.alloc_sh(node))
     }
 
     // sepで終端
@@ -180,8 +188,8 @@ impl ShParser {
         &mut self,
         end_words: &[&str],
         end_tokens: &[ShTokenKind],
-    ) -> Result<ShNodeId, ParseError> {
-        let mut first: Option<ShNodeId> = None;
+    ) -> Result<AstId, ParseError> {
+        let mut first: Option<AstId> = None;
         let mut rest: Vec<AndOrItem> = vec![];
 
         loop {
@@ -232,7 +240,7 @@ impl ShParser {
         let first = first.ok_or(ParseError::InternalError("parse_and_or"))?;
 
         let node = ShAstNode::AndOr { first, rest };
-        Ok(self.arena.alloc(node))
+        Ok(self.arena.alloc_sh(node))
     }
 
     // and or sepで終端
@@ -240,9 +248,9 @@ impl ShParser {
         &mut self,
         end_words: &[&str],
         end_tokens: &[ShTokenKind],
-    ) -> Result<ShNodeId, ParseError> {
-        let mut first: Option<ShNodeId> = None;
-        let mut rest: Vec<ShNodeId> = vec![];
+    ) -> Result<AstId, ParseError> {
+        let mut first: Option<AstId> = None;
+        let mut rest: Vec<AstId> = vec![];
 
         loop {
             let tok = &self.input[self.pos];
@@ -284,7 +292,7 @@ impl ShParser {
 
         let first = first.ok_or(ParseError::InternalError("parse_pipeline"))?;
         let node = ShAstNode::Pipeline { first, rest };
-        Ok(self.arena.alloc(node))
+        Ok(self.arena.alloc_sh(node))
     }
 
     // pipe and or sep で終端
@@ -292,7 +300,7 @@ impl ShParser {
         &mut self,
         end_words: &[&str],
         end_tokens: &[ShTokenKind],
-    ) -> Result<ShNodeId, ParseError> {
+    ) -> Result<AstId, ParseError> {
         let tok = &self.input[self.pos];
         let id = match &tok.kind {
             ShTokenKind::Word(word_kind) => {
@@ -336,7 +344,7 @@ impl ShParser {
         id
     }
 
-    fn parse_if(&mut self) -> Result<ShNodeId, ParseError> {
+    fn parse_if(&mut self) -> Result<AstId, ParseError> {
         self.expect_current_word(&["if", "elif"])?;
         self.pos += 1;
         let cond = self.parse_list(&["then"], &[])?;
@@ -345,12 +353,12 @@ impl ShParser {
         self.expect_current_word(&["then"])?;
         self.pos += 1;
 
-        let then_part: ShNodeId = self.parse_list(&["else", "fi", "elif"], &[])?;
+        let then_part: AstId = self.parse_list(&["else", "fi", "elif"], &[])?;
 
         println!("!!!!!parse then block {:?}", self.input[self.pos]);
         println!("{}", self.input[self.pos].text(&self.src));
 
-        let else_part: Option<ShNodeId> = match self.input[self.pos].text(&self.src) {
+        let else_part: Option<AstId> = match self.input[self.pos].text(&self.src) {
             "fi" => None,
             "else" => {
                 self.pos += 1;
@@ -373,10 +381,10 @@ impl ShParser {
             then_part,
             else_part,
         };
-        Ok(self.arena.alloc(node))
+        Ok(self.arena.alloc_sh(node))
     }
 
-    fn parse_for(&mut self) -> Result<ShNodeId, ParseError> {
+    fn parse_for(&mut self) -> Result<AstId, ParseError> {
         self.expect_current_word(&["for"])?;
         self.pos += 1;
 
@@ -386,10 +394,10 @@ impl ShParser {
         };
         let var = self
             .arena
-            .alloc(ShAstNode::Word(var_tok.text(&self.src).to_string()));
+            .alloc_sh(ShAstNode::Word(var_tok.text(&self.src).to_string()));
         self.pos += 1;
 
-        let mut items: Vec<ShNodeId> = vec![];
+        let mut items: Vec<AstId> = vec![];
         if self.input.get(self.pos).is_some_and(|t| {
             t.kind == ShTokenKind::Word(WordKind::Name) && t.text(&self.src) == "in"
         }) {
@@ -399,7 +407,7 @@ impl ShParser {
                 match tok.kind {
                     ShTokenKind::Word(_) => {
                         let node = ShAstNode::Word(tok.text(&self.src).to_string());
-                        items.push(self.arena.alloc(node));
+                        items.push(self.arena.alloc_sh(node));
                         self.pos += 1;
                     }
                     ShTokenKind::SemiColon | ShTokenKind::NewLine | ShTokenKind::BackgroundExec => {
@@ -433,10 +441,10 @@ impl ShParser {
         self.pos += 1;
 
         let node = ShAstNode::For { var, items, body };
-        Ok(self.arena.alloc(node))
+        Ok(self.arena.alloc_sh(node))
     }
 
-    fn parse_while(&mut self) -> Result<ShNodeId, ParseError> {
+    fn parse_while(&mut self) -> Result<AstId, ParseError> {
         self.expect_current_word(&["while", "until"])?;
         self.pos += 1;
         let cond = self.parse_list(&["do"], &[])?;
@@ -447,17 +455,17 @@ impl ShParser {
         self.pos += 1;
 
         let node = ShAstNode::While { cond, body };
-        Ok(self.arena.alloc(node))
+        Ok(self.arena.alloc_sh(node))
     }
 
-    fn parse_function(&mut self) -> Result<ShNodeId, ParseError> {
+    fn parse_function(&mut self) -> Result<AstId, ParseError> {
         let name_tok = self.input.get(self.pos).ok_or(ParseError::UnexpectedEof)?;
         let ShTokenKind::Word(_) = name_tok.kind else {
             return Err(ParseError::UnexpectedToken(name_tok.clone()));
         };
         let name = self
             .arena
-            .alloc(ShAstNode::Word(name_tok.text(&self.src).to_string()));
+            .alloc_sh(ShAstNode::Word(name_tok.text(&self.src).to_string()));
 
         self.pos += 1;
         self.expect_current_token(ShTokenKind::LParen)?;
@@ -487,17 +495,17 @@ impl ShParser {
         };
 
         let node = ShAstNode::FunctionDef { name, body };
-        Ok(self.arena.alloc(node))
+        Ok(self.arena.alloc_sh(node))
     }
 
     fn parse_simple_command(
         &mut self,
         end_words: &[&str],
         end_tokens: &[ShTokenKind],
-    ) -> Result<ShNodeId, ParseError> {
-        let mut assignments: Vec<ShNodeId> = vec![];
-        let mut argv: Vec<ShNodeId> = vec![];
-        let mut redirs: Vec<ShNodeId> = vec![];
+    ) -> Result<AstId, ParseError> {
+        let mut assignments: Vec<AstId> = vec![];
+        let mut argv: Vec<AstId> = vec![];
+        let mut redirs: Vec<AstId> = vec![];
         let mut heredoc_op: Option<String> = None;
         let mut heredoc_delim: Option<&str> = None;
         let mut heredoc_place: Option<usize> = None;
@@ -530,13 +538,13 @@ impl ShParser {
                     }
                     if s.contains('=') {
                         let node = ShAstNode::Assignment(s.to_string());
-                        assignments.push(self.arena.alloc(node));
+                        assignments.push(self.arena.alloc_sh(node));
                     } else if end_words.contains(&s) {
                         println!("break end_word");
                         break;
                     } else {
                         let node = ShAstNode::Word(s.to_string());
-                        argv.push(self.arena.alloc(node));
+                        argv.push(self.arena.alloc_sh(node));
                     }
                 }
 
@@ -567,7 +575,7 @@ impl ShParser {
                             body: body.to_string(),
                         };
                         self.pos += 1;
-                        redirs.push(self.arena.alloc(node));
+                        redirs.push(self.arena.alloc_sh(node));
                     }
                 }
 
@@ -606,7 +614,7 @@ impl ShParser {
             let body = self.src[start..end].to_string();
             let op = heredoc_op.unwrap();
             let node = ShAstNode::Redir { op, body };
-            let id = self.arena.alloc(node);
+            let id = self.arena.alloc_sh(node);
             self.pos = i + 1;
             redirs.insert(heredoc_place.unwrap(), id);
         }
@@ -617,27 +625,27 @@ impl ShParser {
             redirs,
         };
 
-        Ok(self.arena.alloc(node))
+        Ok(self.arena.alloc_sh(node))
     }
 
-    fn parse_subshell(&mut self) -> Result<ShNodeId, ParseError> {
+    fn parse_subshell(&mut self) -> Result<AstId, ParseError> {
         self.expect_current_token(ShTokenKind::LParen)?;
         self.pos += 1;
         let body = self.parse_list(&[], &[ShTokenKind::RParen])?;
         self.expect_current_token(ShTokenKind::RParen)?;
         self.pos += 1;
         let node = ShAstNode::Subshell { body };
-        Ok(self.arena.alloc(node))
+        Ok(self.arena.alloc_sh(node))
     }
 
-    fn parse_group(&mut self) -> Result<ShNodeId, ParseError> {
+    fn parse_group(&mut self) -> Result<AstId, ParseError> {
         self.expect_current_token(ShTokenKind::LBrace)?;
         self.pos += 1;
         let body = self.parse_list(&[], &[ShTokenKind::RBrace])?;
         self.expect_current_token(ShTokenKind::RBrace)?;
         self.pos += 1;
         let node = ShAstNode::Group { body };
-        Ok(self.arena.alloc(node))
+        Ok(self.arena.alloc_sh(node))
     }
 
     fn recover_to_stmt_boundary(&mut self) {
@@ -656,19 +664,19 @@ impl ShParser {
     }
 }
 
-pub fn format_ast_tree(program: &ShProgram, arena: &ShAstArena) -> String {
+pub fn format_ast_tree(program: &ShProgram, arena: &AstArena) -> String {
     let mut out = String::new();
     push_line(&mut out, 0, "Program");
     fmt_node(program.list, arena, 1, &mut out);
     out
 }
 
-pub fn debug_print_ast(program: &ShProgram, arena: &ShAstArena) {
+pub fn debug_print_ast(program: &ShProgram, arena: &AstArena) {
     println!("{}", format_ast_tree(program, arena));
 }
 
-fn fmt_node(id: ShNodeId, arena: &ShAstArena, indent: usize, out: &mut String) {
-    let node = arena.get(id);
+fn fmt_node(id: AstId, arena: &AstArena, indent: usize, out: &mut String) {
+    let node = arena.get_sh(id);
     match node {
         ShAstNode::Pipeline { first, rest } => {
             push_line(out, indent, "Pipeline");

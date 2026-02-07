@@ -1,13 +1,55 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "title": "Minimal GitHub Actions Workflow Schema",
+  "title": "ci-preflight Workflow Schema (subset)",
   "type": "object",
   "properties": {
+    "name": { "type": "string" },
+    "run-name": { "type": "string" },
     "on": {
       "oneOf": [
         { "type": "string" },
         { "type": "array", "items": { "type": "string" } },
         { "type": "object" }
+      ]
+    },
+    "env": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "defaults": {
+      "type": "object",
+      "properties": {
+        "run": {
+          "type": "object",
+          "properties": {
+            "shell": { "type": "string" },
+            "working-directory": { "type": "string" }
+          },
+          "minProperties": 1,
+          "additionalProperties": false
+        }
+      },
+      "minProperties": 1,
+      "additionalProperties": false
+    },
+    "permissions": {
+      "oneOf": [
+        { "type": "string" },
+        { "type": "object", "additionalProperties": { "type": "string" } }
+      ]
+    },
+    "concurrency": {
+      "oneOf": [
+        { "type": "string" },
+        {
+          "type": "object",
+          "properties": {
+            "group": { "type": "string" },
+            "cancel-in-progress": { "oneOf": [ { "type": "boolean" }, { "type": "string" } ] }
+          },
+          "required": ["group"],
+          "additionalProperties": false
+        }
       ]
     },
     "jobs": {
@@ -16,28 +58,144 @@
       "additionalProperties": {
         "type": "object",
         "properties": {
-          "runs-on": { "type": "string" },
+          "name": { "type": "string" },
+          "needs": {
+            "oneOf": [
+              { "type": "string" },
+              { "type": "array", "items": { "type": "string" } }
+            ]
+          },
+          "runs-on": {
+            "oneOf": [
+              { "type": "string" },
+              { "type": "array", "items": { "type": "string" } },
+              {
+                "type": "object",
+                "properties": {
+                  "group": { "type": "string" },
+                  "labels": {
+                    "oneOf": [
+                      { "type": "string" },
+                      { "type": "array", "items": { "type": "string" } }
+                    ]
+                  }
+                }
+              }
+            ]
+          },
+          "env": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "defaults": {
+            "type": "object",
+            "properties": {
+              "run": {
+                "type": "object",
+                "properties": {
+                  "shell": { "type": "string" },
+                  "working-directory": { "type": "string" }
+                },
+                "minProperties": 1,
+                "additionalProperties": false
+              }
+            },
+            "minProperties": 1,
+            "additionalProperties": false
+          },
+          "permissions": {
+            "oneOf": [
+              { "type": "string" },
+              { "type": "object", "additionalProperties": { "type": "string" } }
+            ]
+          },
+          "if": { "type": ["boolean", "number", "string"] },
+          "strategy": {
+            "type": "object",
+            "properties": {
+              "matrix": { "type": ["object", "string"] },
+              "fail-fast": { "type": ["boolean", "string"] },
+              "max-parallel": { "type": ["number", "string"] }
+            },
+            "required": ["matrix"],
+            "additionalProperties": false
+          },
+          "continue-on-error": { "oneOf": [ { "type": "boolean" }, { "type": "string" } ] },
+          "timeout-minutes": { "oneOf": [ { "type": "number" }, { "type": "string" } ] },
+          "container": {
+            "oneOf": [
+              { "type": "string" },
+              {
+                "type": "object",
+                "properties": {
+                  "image": { "type": "string" },
+                  "credentials": {
+                    "type": "object",
+                    "properties": {
+                      "username": { "type": "string" },
+                      "password": { "type": "string" }
+                    }
+                  },
+                  "env": { "type": "object", "additionalProperties": true },
+                  "ports": { "type": "array", "items": { "oneOf": [ { "type": "number" }, { "type": "string" } ] } },
+                  "volumes": { "type": "array", "items": { "type": "string" } },
+                  "options": { "type": "string" }
+                },
+                "required": ["image"],
+                "additionalProperties": false
+              }
+            ]
+          },
+          "services": {
+            "type": "object",
+            "additionalProperties": {
+              "oneOf": [
+                { "type": "string" },
+                {
+                  "type": "object",
+                  "properties": {
+                    "image": { "type": "string" },
+                    "credentials": {
+                      "type": "object",
+                      "properties": {
+                        "username": { "type": "string" },
+                        "password": { "type": "string" }
+                      }
+                    },
+                    "env": { "type": "object", "additionalProperties": true },
+                    "ports": { "type": "array", "items": { "oneOf": [ { "type": "number" }, { "type": "string" } ] } },
+                    "volumes": { "type": "array", "items": { "type": "string" } },
+                    "options": { "type": "string" }
+                  },
+                  "required": ["image"],
+                  "additionalProperties": false
+                }
+              ]
+            }
+          },
           "steps": {
             "type": "array",
             "minItems": 1,
             "items": {
               "type": "object",
               "oneOf": [
-                {
-                  "properties": {
-                    "run": { "type": "string" }
-                  },
-                  "required": ["run"],
-                  "additionalProperties": true
-                },
-                {
-                  "properties": {
-                    "uses": { "type": "string" }
-                  },
-                  "required": ["uses"],
-                  "additionalProperties": true
-                }
-              ]
+                { "required": ["uses"] },
+                { "required": ["run"] }
+              ],
+              "properties": {
+                "id": { "type": "string" },
+                "name": { "type": "string" },
+                "if": { "type": ["boolean", "number", "string"] },
+                "uses": { "type": "string" },
+                "run": { "type": "string" },
+                "with": { "type": "object", "additionalProperties": true },
+                "env": { "type": "object", "additionalProperties": true },
+                "shell": { "type": "string" },
+                "working-directory": { "type": "string" },
+                "continue-on-error": { "oneOf": [ { "type": "boolean" }, { "type": "string" } ] },
+                "timeout-minutes": { "oneOf": [ { "type": "number" }, { "type": "string" } ] }
+              },
+              "additionalProperties": true
             }
           }
         },
