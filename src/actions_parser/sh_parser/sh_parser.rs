@@ -45,12 +45,7 @@ impl ShParser {
         let tok = &self.input[self.pos];
         match tok.kind {
             ShTokenKind::Word(_) if word.contains(&tok.text(&self.src)) => Ok(()),
-            _ => {
-                panic!(
-                    "Unexpected current word: expected: {:?}, actual: {:?}",
-                    word, tok
-                );
-            } //Err(ParseError::UnexpectedToken(tok.clone())),
+            _ => Err(ParseError::UnexpectedToken(tok.clone())),
         }
     }
 
@@ -61,20 +56,42 @@ impl ShParser {
             Err(ParseError::UnexpectedToken(self.input[self.pos].clone()))
         }
     }
+    fn next_token(&self) -> Option<&ShToken> {
+        self.input.get(self.pos + 1)
+    }
 
-    fn expect_next_token(&self, kind: ShTokenKind) -> Result<(), ParseError> {
-        if self.input.len() >= self.pos + 1 {
-            Err(ParseError::UnexpectedEof)
-        } else if self.input[self.pos + 1].kind == kind {
-            Ok(())
-        } else {
-            panic!();
-            Err(ParseError::UnexpectedToken(self.input[self.pos].clone()))
+    fn record_error(&mut self, err: ParseError) {
+        self.errors.push(err);
+    }
+
+    fn recover_to_stmt_boundary(&mut self) {
+        loop {
+            match self.input.get(self.pos) {
+                Some(t)
+                    if matches!(
+                        t.kind,
+                        ShTokenKind::NewLine
+                            | ShTokenKind::SemiColon
+                            | ShTokenKind::And
+                            | ShTokenKind::Or
+                            | ShTokenKind::Pipe
+                            | ShTokenKind::BackgroundExec
+                            | ShTokenKind::RParen
+                            | ShTokenKind::RBrace
+                            | ShTokenKind::Eof
+                    ) =>
+                {
+                    break;
+                }
+                Some(_) => self.pos += 1,
+                None => break,
+            }
         }
     }
 
-    fn next_token(&self) -> Option<&ShToken> {
-        self.input.get(self.pos + 1)
+    fn recover_unknown(&mut self) -> AstId {
+        self.recover_to_stmt_boundary();
+        self.arena.alloc_sh(ShAstNode::Unknown)
     }
 
     fn require_end_of_line(&self) -> Result<(), ParseError> {
@@ -100,7 +117,13 @@ impl ShParser {
                 _ => break,
             }
         }
-        let list = self.parse_list(&[], &[ShTokenKind::Eof])?;
+        let list = match self.parse_list(&[], &[ShTokenKind::Eof]) {
+            Ok(list) => list,
+            Err(err) => {
+                self.record_error(err);
+                self.recover_unknown()
+            }
+        };
         Ok(ShProgram { list })
     }
 
@@ -129,7 +152,13 @@ impl ShParser {
                 break;
             }
 
-            let body = self.parse_and_or(end_words, end_tokens)?;
+            let body = match self.parse_and_or(end_words, end_tokens) {
+                Ok(body) => body,
+                Err(err) => {
+                    self.record_error(err);
+                    self.recover_unknown()
+                }
+            };
 
             while self
                 .input
@@ -166,7 +195,10 @@ impl ShParser {
                         should_break = true;
                         SeparatorKind::Seq
                     } else {
-                        panic!()
+                        let err = ParseError::UnexpectedToken(tok.clone());
+                        self.record_error(err);
+                        self.recover_to_stmt_boundary();
+                        SeparatorKind::Seq
                     }
                 }
             };
@@ -221,7 +253,13 @@ impl ShParser {
             }
 
             if first == None {
-                first = Some(self.parse_pipeline(end_words, end_tokens)?);
+                first = Some(match self.parse_pipeline(end_words, end_tokens) {
+                    Ok(first) => first,
+                    Err(err) => {
+                        self.record_error(err);
+                        return Ok(self.recover_unknown());
+                    }
+                });
             } else {
                 let op = match self.input[self.pos].kind {
                     ShTokenKind::And => AndOrOp::And,
@@ -230,7 +268,13 @@ impl ShParser {
                 };
                 self.pos += 1;
 
-                let body = self.parse_pipeline(end_words, end_tokens)?;
+                let body = match self.parse_pipeline(end_words, end_tokens) {
+                    Ok(body) => body,
+                    Err(err) => {
+                        self.record_error(err);
+                        self.recover_unknown()
+                    }
+                };
 
                 rest.push(AndOrItem { op, body })
             }
@@ -279,13 +323,25 @@ impl ShParser {
             }
 
             if first == None {
-                first = Some(self.parse_command(end_words, end_tokens)?);
+                first = Some(match self.parse_command(end_words, end_tokens) {
+                    Ok(first) => first,
+                    Err(err) => {
+                        self.record_error(err);
+                        return Ok(self.recover_unknown());
+                    }
+                });
             } else {
                 if self.input[self.pos].kind != ShTokenKind::Pipe {
                     break;
                 }
                 self.pos += 1;
-                let body = self.parse_command(end_words, end_tokens)?;
+                let body = match self.parse_command(end_words, end_tokens) {
+                    Ok(body) => body,
+                    Err(err) => {
+                        self.record_error(err);
+                        self.recover_unknown()
+                    }
+                };
                 rest.push(body)
             }
         }
@@ -337,7 +393,9 @@ impl ShParser {
             ShTokenKind::LBrace => self.parse_group(),
             _ => {
                 eprintln!("reach {:?}", tok);
-                return Err(ParseError::UnexpectedToken(tok.clone()));
+                let err = ParseError::UnexpectedToken(tok.clone());
+                self.record_error(err);
+                return Ok(self.recover_unknown());
             }
         };
 
@@ -345,15 +403,33 @@ impl ShParser {
     }
 
     fn parse_if(&mut self) -> Result<AstId, ParseError> {
-        self.expect_current_word(&["if", "elif"])?;
+        if let Err(err) = self.expect_current_word(&["if", "elif"]) {
+            self.record_error(err);
+            return Ok(self.recover_unknown());
+        }
         self.pos += 1;
-        let cond = self.parse_list(&["then"], &[])?;
+        let cond = match self.parse_list(&["then"], &[]) {
+            Ok(cond) => cond,
+            Err(err) => {
+                self.record_error(err);
+                self.recover_unknown()
+            }
+        };
         println!("!!!!!parse cond {:?}", self.input[self.pos]);
         println!("{}", self.input[self.pos].text(&self.src));
-        self.expect_current_word(&["then"])?;
+        if let Err(err) = self.expect_current_word(&["then"]) {
+            self.record_error(err);
+            return Ok(self.recover_unknown());
+        }
         self.pos += 1;
 
-        let then_part: AstId = self.parse_list(&["else", "fi", "elif"], &[])?;
+        let then_part: AstId = match self.parse_list(&["else", "fi", "elif"], &[]) {
+            Ok(then_part) => then_part,
+            Err(err) => {
+                self.record_error(err);
+                self.recover_unknown()
+            }
+        };
 
         println!("!!!!!parse then block {:?}", self.input[self.pos]);
         println!("{}", self.input[self.pos].text(&self.src));
@@ -362,14 +438,22 @@ impl ShParser {
             "fi" => None,
             "else" => {
                 self.pos += 1;
-                Some(self.parse_list(&["fi"], &[])?)
+                Some(match self.parse_list(&["fi"], &[]) {
+                    Ok(body) => body,
+                    Err(err) => {
+                        self.record_error(err);
+                        self.recover_unknown()
+                    }
+                })
             }
             "elif" => Some(self.parse_if()?),
             _ => {
                 if self.input[self.pos].kind == ShTokenKind::Eof {
                     None
                 } else {
-                    panic!()
+                    let err = ParseError::UnexpectedToken(self.input[self.pos].clone());
+                    self.record_error(err);
+                    Some(self.recover_unknown())
                 }
             }
         };
@@ -385,12 +469,23 @@ impl ShParser {
     }
 
     fn parse_for(&mut self) -> Result<AstId, ParseError> {
-        self.expect_current_word(&["for"])?;
+        if let Err(err) = self.expect_current_word(&["for"]) {
+            self.record_error(err);
+            return Ok(self.recover_unknown());
+        }
         self.pos += 1;
 
-        let var_tok = self.input.get(self.pos).ok_or(ParseError::UnexpectedEof)?;
+        let var_tok = match self.input.get(self.pos) {
+            Some(tok) => tok,
+            None => {
+                self.record_error(ParseError::UnexpectedEof);
+                return Ok(self.recover_unknown());
+            }
+        };
         let ShTokenKind::Word(_) = var_tok.kind else {
-            return Err(ParseError::UnexpectedToken(var_tok.clone()));
+            let err = ParseError::UnexpectedToken(var_tok.clone());
+            self.record_error(err);
+            return Ok(self.recover_unknown());
         };
         let var = self
             .arena
@@ -403,7 +498,13 @@ impl ShParser {
         }) {
             self.pos += 1;
             loop {
-                let tok = self.input.get(self.pos).ok_or(ParseError::UnexpectedEof)?;
+                let tok = match self.input.get(self.pos) {
+                    Some(tok) => tok,
+                    None => {
+                        self.record_error(ParseError::UnexpectedEof);
+                        return Ok(self.recover_unknown());
+                    }
+                };
                 match tok.kind {
                     ShTokenKind::Word(_) => {
                         let node = ShAstNode::Word(tok.text(&self.src).to_string());
@@ -413,17 +514,31 @@ impl ShParser {
                     ShTokenKind::SemiColon | ShTokenKind::NewLine | ShTokenKind::BackgroundExec => {
                         break;
                     }
-                    _ => return Err(ParseError::UnexpectedToken(tok.clone())),
+                    _ => {
+                        let err = ParseError::UnexpectedToken(tok.clone());
+                        self.record_error(err);
+                        return Ok(self.recover_unknown());
+                    }
                 }
             }
         }
 
-        let sep = self.input.get(self.pos).ok_or(ParseError::UnexpectedEof)?;
+        let sep = match self.input.get(self.pos) {
+            Some(sep) => sep,
+            None => {
+                self.record_error(ParseError::UnexpectedEof);
+                return Ok(self.recover_unknown());
+            }
+        };
         match sep.kind {
             ShTokenKind::SemiColon | ShTokenKind::NewLine | ShTokenKind::BackgroundExec => {
                 self.pos += 1;
             }
-            _ => return Err(ParseError::UnexpectedToken(sep.clone())),
+            _ => {
+                let err = ParseError::UnexpectedToken(sep.clone());
+                self.record_error(err);
+                return Ok(self.recover_unknown());
+            }
         }
 
         while self
@@ -434,10 +549,22 @@ impl ShParser {
             self.pos += 1;
         }
 
-        self.expect_current_word(&["do"])?;
+        if let Err(err) = self.expect_current_word(&["do"]) {
+            self.record_error(err);
+            return Ok(self.recover_unknown());
+        }
         self.pos += 1;
-        let body = self.parse_list(&["done"], &[])?;
-        self.expect_current_word(&["done"])?;
+        let body = match self.parse_list(&["done"], &[]) {
+            Ok(body) => body,
+            Err(err) => {
+                self.record_error(err);
+                self.recover_unknown()
+            }
+        };
+        if let Err(err) = self.expect_current_word(&["done"]) {
+            self.record_error(err);
+            return Ok(self.recover_unknown());
+        }
         self.pos += 1;
 
         let node = ShAstNode::For { var, items, body };
@@ -445,13 +572,34 @@ impl ShParser {
     }
 
     fn parse_while(&mut self) -> Result<AstId, ParseError> {
-        self.expect_current_word(&["while", "until"])?;
+        if let Err(err) = self.expect_current_word(&["while", "until"]) {
+            self.record_error(err);
+            return Ok(self.recover_unknown());
+        }
         self.pos += 1;
-        let cond = self.parse_list(&["do"], &[])?;
-        self.expect_current_word(&["do"])?;
+        let cond = match self.parse_list(&["do"], &[]) {
+            Ok(cond) => cond,
+            Err(err) => {
+                self.record_error(err);
+                self.recover_unknown()
+            }
+        };
+        if let Err(err) = self.expect_current_word(&["do"]) {
+            self.record_error(err);
+            return Ok(self.recover_unknown());
+        }
         self.pos += 1;
-        let body = self.parse_list(&["done"], &[])?;
-        self.expect_current_word(&["done"])?;
+        let body = match self.parse_list(&["done"], &[]) {
+            Ok(body) => body,
+            Err(err) => {
+                self.record_error(err);
+                self.recover_unknown()
+            }
+        };
+        if let Err(err) = self.expect_current_word(&["done"]) {
+            self.record_error(err);
+            return Ok(self.recover_unknown());
+        }
         self.pos += 1;
 
         let node = ShAstNode::While { cond, body };
@@ -459,18 +607,32 @@ impl ShParser {
     }
 
     fn parse_function(&mut self) -> Result<AstId, ParseError> {
-        let name_tok = self.input.get(self.pos).ok_or(ParseError::UnexpectedEof)?;
+        let name_tok = match self.input.get(self.pos) {
+            Some(tok) => tok,
+            None => {
+                self.record_error(ParseError::UnexpectedEof);
+                return Ok(self.recover_unknown());
+            }
+        };
         let ShTokenKind::Word(_) = name_tok.kind else {
-            return Err(ParseError::UnexpectedToken(name_tok.clone()));
+            let err = ParseError::UnexpectedToken(name_tok.clone());
+            self.record_error(err);
+            return Ok(self.recover_unknown());
         };
         let name = self
             .arena
             .alloc_sh(ShAstNode::Word(name_tok.text(&self.src).to_string()));
 
         self.pos += 1;
-        self.expect_current_token(ShTokenKind::LParen)?;
+        if let Err(err) = self.expect_current_token(ShTokenKind::LParen) {
+            self.record_error(err);
+            return Ok(self.recover_unknown());
+        }
         self.pos += 1;
-        self.expect_current_token(ShTokenKind::RParen)?;
+        if let Err(err) = self.expect_current_token(ShTokenKind::RParen) {
+            self.record_error(err);
+            return Ok(self.recover_unknown());
+        }
         self.pos += 1;
 
         while self
@@ -486,12 +648,23 @@ impl ShParser {
                 "if" => self.parse_if()?,
                 "for" => self.parse_for()?,
                 "while" | "until" => self.parse_while()?,
-                _ => return Err(ParseError::UnexpectedToken(self.input[self.pos].clone())),
+                _ => {
+                    let err = ParseError::UnexpectedToken(self.input[self.pos].clone());
+                    self.record_error(err);
+                    return Ok(self.recover_unknown());
+                }
             },
             Some(ShTokenKind::LParen) => self.parse_subshell()?,
             Some(ShTokenKind::LBrace) => self.parse_group()?,
-            Some(_) => return Err(ParseError::UnexpectedToken(self.input[self.pos].clone())),
-            None => return Err(ParseError::UnexpectedEof),
+            Some(_) => {
+                let err = ParseError::UnexpectedToken(self.input[self.pos].clone());
+                self.record_error(err);
+                return Ok(self.recover_unknown());
+            }
+            None => {
+                self.record_error(ParseError::UnexpectedEof);
+                return Ok(self.recover_unknown());
+            }
         };
 
         let node = ShAstNode::FunctionDef { name, body };
@@ -593,7 +766,11 @@ impl ShParser {
                 | ShTokenKind::Or => {
                     break;
                 }
-                _ => return panic!(), // Err(ParseError::UnexpectedToken(tok.clone())),
+                _ => {
+                    let err = ParseError::UnexpectedToken(self.input[self.pos].clone());
+                    self.record_error(err);
+                    return Ok(self.recover_unknown());
+                }
             }
 
             self.pos += 1;
@@ -606,17 +783,21 @@ impl ShParser {
                 i += 1;
                 match self.input.get(i) {
                     Some(t) if t.text(&self.src) == delim => break,
-                    None => return Err(ParseError::UnexpectedEof),
+                    None => {
+                        self.record_error(ParseError::UnexpectedEof);
+                        return Ok(self.recover_unknown());
+                    }
                     _ => continue,
                 };
             }
             let end = self.input[i].span.index - 1;
             let body = self.src[start..end].to_string();
-            let op = heredoc_op.unwrap();
+            let op = heredoc_op.ok_or(ParseError::InternalError("missing heredoc op"))?;
             let node = ShAstNode::Redir { op, body };
             let id = self.arena.alloc_sh(node);
             self.pos = i + 1;
-            redirs.insert(heredoc_place.unwrap(), id);
+            let place = heredoc_place.ok_or(ParseError::InternalError("missing heredoc place"))?;
+            redirs.insert(place, id);
         }
 
         let node = ShAstNode::SimpleCommand {
@@ -629,38 +810,49 @@ impl ShParser {
     }
 
     fn parse_subshell(&mut self) -> Result<AstId, ParseError> {
-        self.expect_current_token(ShTokenKind::LParen)?;
+        if let Err(err) = self.expect_current_token(ShTokenKind::LParen) {
+            self.record_error(err);
+            return Ok(self.recover_unknown());
+        }
         self.pos += 1;
-        let body = self.parse_list(&[], &[ShTokenKind::RParen])?;
-        self.expect_current_token(ShTokenKind::RParen)?;
-        self.pos += 1;
+        let body = match self.parse_list(&[], &[ShTokenKind::RParen]) {
+            Ok(body) => body,
+            Err(err) => {
+                self.record_error(err);
+                self.recover_unknown()
+            }
+        };
+        if let Err(err) = self.expect_current_token(ShTokenKind::RParen) {
+            self.record_error(err);
+            self.recover_to_stmt_boundary();
+        } else {
+            self.pos += 1;
+        }
         let node = ShAstNode::Subshell { body };
         Ok(self.arena.alloc_sh(node))
     }
 
     fn parse_group(&mut self) -> Result<AstId, ParseError> {
-        self.expect_current_token(ShTokenKind::LBrace)?;
+        if let Err(err) = self.expect_current_token(ShTokenKind::LBrace) {
+            self.record_error(err);
+            return Ok(self.recover_unknown());
+        }
         self.pos += 1;
-        let body = self.parse_list(&[], &[ShTokenKind::RBrace])?;
-        self.expect_current_token(ShTokenKind::RBrace)?;
-        self.pos += 1;
+        let body = match self.parse_list(&[], &[ShTokenKind::RBrace]) {
+            Ok(body) => body,
+            Err(err) => {
+                self.record_error(err);
+                self.recover_unknown()
+            }
+        };
+        if let Err(err) = self.expect_current_token(ShTokenKind::RBrace) {
+            self.record_error(err);
+            self.recover_to_stmt_boundary();
+        } else {
+            self.pos += 1;
+        }
         let node = ShAstNode::Group { body };
         Ok(self.arena.alloc_sh(node))
-    }
-
-    fn recover_to_stmt_boundary(&mut self) {
-        eprintln!("RECOVER");
-        while let Some(tok) = self.next_token() {
-            match tok.kind {
-                ShTokenKind::NewLine
-                | ShTokenKind::SemiColon
-                | ShTokenKind::RParen
-                | ShTokenKind::RBrace => {
-                    break;
-                }
-                _ => self.pos += 1,
-            }
-        }
     }
 }
 
@@ -762,9 +954,6 @@ fn fmt_node(id: AstId, arena: &AstArena, indent: usize, out: &mut String) {
         ShAstNode::Redir { op, body } => {
             push_line(out, indent, &format!("Redir \"{op}\" \"{body}\""));
         }
-        ShAstNode::Unknown => {
-            push_line(out, indent, "Unknown");
-        }
         ShAstNode::List(v) => {
             push_line(out, indent, "List");
             v.iter().for_each(|item| {
@@ -778,6 +967,9 @@ fn fmt_node(id: AstId, arena: &AstArena, indent: usize, out: &mut String) {
                 push_line(out, indent + 1, &format!("{:?}", cmd.op));
                 fmt_node(cmd.body, arena, indent + 1, out);
             })
+        }
+        ShAstNode::Unknown => {
+            push_line(out, indent, "Unknown");
         }
     }
 }

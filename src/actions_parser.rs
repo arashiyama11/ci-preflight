@@ -1,9 +1,9 @@
-mod actions_ast;
+pub(crate) mod actions_ast;
 mod parser;
-mod sh_parser;
+pub(crate) mod sh_parser;
 pub(crate) mod source_map;
 
-mod arena;
+pub(crate) mod arena;
 
 use crate::actions_parser::arena::{AstArena, AstId};
 use crate::actions_parser::parser::ActionsParseError;
@@ -12,7 +12,7 @@ use crate::actions_parser::source_map::{SourceId, SourceMap};
 pub fn parse_actions_yaml(
     source_map: &mut SourceMap,
     source_id: &SourceId,
-) -> Result<(AstId, AstArena), ActionsParseError> {
+) -> Result<(AstId, AstArena, Vec<ActionsParseError>), ActionsParseError> {
     parser::parse_actions_yaml(source_map, source_id)
 }
 

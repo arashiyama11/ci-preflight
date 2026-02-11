@@ -5,9 +5,6 @@ use thiserror::Error;
 
 #[derive(Error, Debug)]
 pub enum LexerError {
-    #[error("Unexpected charactor: $0")]
-    UnexpectedCharactor(char, Span),
-
     #[error("Unexpected EOF: $0")]
     UnexpectedEof(Span),
 

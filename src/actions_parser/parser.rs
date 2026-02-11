@@ -3,37 +3,107 @@ use crate::actions_parser::actions_ast::{
     RunsOn, ScalarValue, Strategy, StringOrArray,
 };
 use crate::actions_parser::arena::{AstArena, AstId};
-use crate::actions_parser::parser::ActionsParseError::InvalidActions;
 use crate::actions_parser::source_map::{SourceId, SourceMap};
 use std::collections::BTreeMap;
 use std::fmt::Write;
 use thiserror::Error;
 use yaml_rust2::{ScanError, Yaml, YamlEmitter, YamlLoader};
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ParseLocation {
+    pub source_id: SourceId,
+    pub span: Option<(usize, usize)>,
+}
+
 #[derive(Error, Debug)]
 pub enum ActionsParseError {
     #[error("InternalError $0")]
     ScanError(ScanError),
-    #[error("Invalid Actions yaml: $0")]
-    InvalidActions(&'static str),
+    #[error("Invalid Actions yaml: {message}")]
+    InvalidActions {
+        message: String,
+        location: Option<ParseLocation>,
+    },
+}
+
+fn sh_error_location(
+    err: &crate::actions_parser::sh_parser::ShParseError,
+) -> Option<ParseLocation> {
+    match err {
+        crate::actions_parser::sh_parser::ShParseError::Lexer(
+            crate::actions_parser::sh_parser::LexerError::UnexpectedEof(span),
+        ) => Some(ParseLocation {
+            source_id: span.source_id,
+            span: Some((span.index, span.len)),
+        }),
+        crate::actions_parser::sh_parser::ShParseError::Lexer(
+            crate::actions_parser::sh_parser::LexerError::Unknown,
+        ) => None,
+        crate::actions_parser::sh_parser::ShParseError::Parser(
+            crate::actions_parser::sh_parser::ParseError::UnexpectedToken(tok),
+        ) => Some(ParseLocation {
+            source_id: tok.span.source_id,
+            span: Some((tok.span.index, tok.span.len)),
+        }),
+        crate::actions_parser::sh_parser::ShParseError::Parser(
+            crate::actions_parser::sh_parser::ParseError::UnexpectedEof,
+        ) => None,
+        crate::actions_parser::sh_parser::ShParseError::Parser(
+            crate::actions_parser::sh_parser::ParseError::InternalError(_),
+        ) => None,
+    }
 }
 
 struct ActionsParser {
     arena: AstArena,
+    errors: Vec<ActionsParseError>,
+    current_source_id: Option<SourceId>,
 }
 
 impl ActionsParser {
     fn new() -> ActionsParser {
         ActionsParser {
             arena: AstArena::new(),
+            errors: vec![],
+            current_source_id: None,
         }
+    }
+    fn record_error(&mut self, msg: impl Into<String>) {
+        let message = msg.into();
+        if let Some(source_id) = self.current_source_id {
+            self.errors.push(ActionsParseError::InvalidActions {
+                message,
+                location: Some(ParseLocation {
+                    source_id,
+                    span: None,
+                }),
+            });
+        } else {
+            self.errors.push(ActionsParseError::InvalidActions {
+                message,
+                location: None,
+            });
+        }
+    }
+    fn errors(&self) -> &[ActionsParseError] {
+        &self.errors
     }
     fn parse(
         &mut self,
         source_id: &SourceId,
         source_map: &mut SourceMap,
     ) -> Result<AstId, ActionsParseError> {
-        let s = source_map.get_text(source_id).unwrap().to_string();
+        self.current_source_id = Some(*source_id);
+        let s = source_map
+            .get_text(source_id)
+            .ok_or_else(|| ActionsParseError::InvalidActions {
+                message: "source not found".to_string(),
+                location: self.current_source_id.map(|source_id| ParseLocation {
+                    source_id,
+                    span: None,
+                }),
+            })?
+            .to_string();
         self.parse_from_str(source_map, &s)
     }
 
@@ -44,7 +114,13 @@ impl ActionsParser {
     ) -> Result<AstId, ActionsParseError> {
         let yaml = YamlLoader::load_from_str(s).map_err(|e| ActionsParseError::ScanError(e))?;
         if yaml.len() != 1 {
-            return Err(ActionsParseError::InvalidActions("a"));
+            return Err(ActionsParseError::InvalidActions {
+                message: "expected a single document".to_string(),
+                location: self.current_source_id.map(|source_id| ParseLocation {
+                    source_id,
+                    span: None,
+                }),
+            });
         }
 
         let yaml = &yaml[0];
@@ -55,26 +131,39 @@ impl ActionsParser {
         let permissions = self.parse_permissions(self.get_map_value(yaml, "permissions"));
         let concurrency = self.parse_concurrency(self.get_map_value(yaml, "concurrency"));
 
-        let jobs_yaml = self
-            .get_map_value(yaml, "jobs")
-            .ok_or(ActionsParseError::InvalidActions("jobs is required"))?;
-        let jobs_hash = jobs_yaml
-            .as_hash()
-            .ok_or(ActionsParseError::InvalidActions("jobs must be an object"))?;
         let mut jobs = Vec::new();
-        for (_job_id, job_yaml) in jobs_hash.iter() {
-            jobs.push(self.parse_job(source_map, job_yaml)?);
+        if let Some(jobs_yaml) = self.get_map_value(yaml, "jobs") {
+            if let Some(jobs_hash) = jobs_yaml.as_hash() {
+                for (_job_id, job_yaml) in jobs_hash.iter() {
+                    match self.parse_job(source_map, job_yaml) {
+                        Ok(job_id) => jobs.push(job_id),
+                        Err(err) => self.errors.push(err),
+                    }
+                }
+            } else {
+                self.record_error("jobs must be an object");
+            }
+        } else {
+            self.record_error("jobs is required");
         }
 
         let on = match &yaml["on"] {
             Yaml::String(s) => ActionsAst::OnString(s.clone()),
-            Yaml::Array(arr) => ActionsAst::OnArray(
-                arr.iter()
-                    .map(|y| y.as_str().unwrap().to_string())
-                    .collect(),
-            ),
+            Yaml::Array(arr) => {
+                let mut items = Vec::new();
+                for y in arr {
+                    match y.as_str() {
+                        Some(s) => items.push(s.to_string()),
+                        None => self.record_error("on array must contain only strings"),
+                    }
+                }
+                ActionsAst::OnArray(items)
+            }
             Yaml::Hash(_) => ActionsAst::OnObject,
-            _ => return Err(InvalidActions("on is required")),
+            _ => {
+                self.record_error("on is required");
+                ActionsAst::OnObject
+            }
         };
 
         let on = self.arena.alloc_actions(on);
@@ -90,10 +179,6 @@ impl ActionsParser {
             concurrency,
         };
         Ok(self.arena.alloc_actions(node))
-    }
-
-    fn into_arena(self) -> AstArena {
-        self.arena
     }
 
     fn format_ast(&self, root: &AstId) -> String {
@@ -438,6 +523,35 @@ impl ActionsParser {
         let _ = writeln!(out, "{}", s);
     }
 
+    fn parse_run_to_sh_ast(&mut self, source_map: &mut SourceMap, run: String) -> AstId {
+        let run_source_id = source_map.add_sh_file(std::path::PathBuf::from("<run>"), run);
+        let arena = std::mem::replace(&mut self.arena, AstArena::new());
+        match crate::actions_parser::sh_parser::parse_sh_with_arena(
+            source_map,
+            &run_source_id,
+            arena,
+        ) {
+            Ok((program, arena)) => {
+                self.arena = arena;
+                program.list
+            }
+            Err(err) => {
+                let message = format!("run shell parse error: {}", err.error);
+                let location = sh_error_location(&err.error).or_else(|| {
+                    Some(ParseLocation {
+                        source_id: run_source_id,
+                        span: None,
+                    })
+                });
+                self.errors
+                    .push(ActionsParseError::InvalidActions { message, location });
+                self.arena = err.arena;
+                self.arena
+                    .alloc_sh(crate::actions_parser::sh_parser::sh_ast::ShAstNode::Unknown)
+            }
+        }
+    }
+
     fn parse_job(
         &mut self,
         source_map: &mut SourceMap,
@@ -446,20 +560,41 @@ impl ActionsParser {
         let name = self
             .get_map_value(yaml, "name")
             .and_then(|v| v.as_str().map(|s| s.to_string()));
-        let runs_on_yaml = self
-            .get_map_value(yaml, "runs-on")
-            .ok_or(InvalidActions("jobs.<job_id>.runs-on is required"))?;
-        let runs_on = self.parse_runs_on(runs_on_yaml)?;
-        let steps_yaml = self
-            .get_map_value(yaml, "steps")
-            .ok_or(InvalidActions("jobs.<job_id>.steps required"))?;
-        let steps_vec = steps_yaml
-            .as_vec()
-            .ok_or(InvalidActions("jobs.<job_id>.steps must be array"))?;
-        let steps = steps_vec
-            .iter()
-            .map(|y| self.parse_step(source_map, y))
-            .collect::<Result<Vec<_>, _>>()?;
+        let runs_on = match self.get_map_value(yaml, "runs-on") {
+            Some(runs_on_yaml) => match self.parse_runs_on(runs_on_yaml) {
+                Ok(v) => v,
+                Err(err) => {
+                    self.errors.push(err);
+                    RunsOn::String("<invalid>".to_string())
+                }
+            },
+            None => {
+                self.record_error("jobs.<job_id>.runs-on is required");
+                RunsOn::String("<invalid>".to_string())
+            }
+        };
+        let steps = match self.get_map_value(yaml, "steps") {
+            Some(steps_yaml) => match steps_yaml.as_vec() {
+                Some(steps_vec) => {
+                    let mut out = Vec::new();
+                    for step_yaml in steps_vec {
+                        match self.parse_step(source_map, step_yaml) {
+                            Ok(step_id) => out.push(step_id),
+                            Err(err) => self.errors.push(err),
+                        }
+                    }
+                    out
+                }
+                None => {
+                    self.record_error("jobs.<job_id>.steps must be array");
+                    vec![]
+                }
+            },
+            None => {
+                self.record_error("jobs.<job_id>.steps required");
+                vec![]
+            }
+        };
         let needs = self.parse_needs(self.get_map_value(yaml, "needs"));
         let env = self.parse_string_map(self.get_map_value(yaml, "env"));
         let defaults = self.parse_defaults(self.get_map_value(yaml, "defaults"));
@@ -531,16 +666,9 @@ impl ActionsParser {
             let working_directory = self
                 .get_map_value(yaml, "working-directory")
                 .and_then(|v| v.as_str().map(|s| s.to_string()));
-            let run_source_id = source_map.add_sh_file(std::path::PathBuf::from("<run>"), run);
-            let arena = std::mem::replace(&mut self.arena, AstArena::new());
-            let (program, arena) = crate::actions_parser::sh_parser::parse_sh_with_arena(
-                source_map,
-                &run_source_id,
-                arena,
-            );
-            self.arena = arena;
+            let run_id = self.parse_run_to_sh_ast(source_map, run);
             ActionsAst::RunStep {
-                run: program.list,
+                run: run_id,
                 name,
                 id,
                 if_cond,
@@ -563,7 +691,20 @@ impl ActionsParser {
                 continue_on_error,
             }
         } else {
-            return Err(InvalidActions("steps.<job_id>.run or uses required"));
+            self.record_error("steps.<job_id>.run or uses required");
+            ActionsAst::RunStep {
+                run: self
+                    .arena
+                    .alloc_sh(crate::actions_parser::sh_parser::sh_ast::ShAstNode::Unknown),
+                name,
+                id,
+                if_cond,
+                env,
+                shell: None,
+                working_directory: None,
+                timeout_minutes,
+                continue_on_error,
+            }
         };
 
         Ok(self.arena.alloc_actions(node))
@@ -779,15 +920,18 @@ impl ActionsParser {
 pub(crate) fn parse_actions_yaml(
     source_map: &mut SourceMap,
     source_id: &SourceId,
-) -> Result<(AstId, AstArena), ActionsParseError> {
+) -> Result<(AstId, AstArena, Vec<ActionsParseError>), ActionsParseError> {
     let mut parser = ActionsParser::new();
     let root = parser.parse(source_id, source_map)?;
-    Ok((root, parser.into_arena()))
+    let ActionsParser { arena, errors, .. } = parser;
+    Ok((root, arena, errors))
 }
 
 pub(crate) fn format_actions_tree(arena: &AstArena, root: &AstId) -> String {
     let parser = ActionsParser {
         arena: arena.clone(),
+        errors: vec![],
+        current_source_id: None,
     };
     parser.format_ast(root)
 }
@@ -822,6 +966,7 @@ jobs:
         run: ./gradlew clean desktopTest --stacktrace --no-daemon"#;
         let root = parser.parse_from_str(&mut source_map, s).unwrap();
         let tree = parser.format_ast(&root);
+        assert!(parser.errors().is_empty());
         assert!(tree.contains("Workflow name=Some(\"Unit Test\") run_name=None"));
         assert!(tree.contains("OnObject"));
         assert!(tree.contains("Job name=None runs_on=String(\"ubuntu-latest\")"));
@@ -880,6 +1025,7 @@ jobs:
           JAVA_HOME: /opt/java
 "#;
         let root = parser.parse_from_str(&mut source_map, s).unwrap();
+        assert!(parser.errors().is_empty());
         let workflow = parser.arena.get_actions(&root);
         match workflow {
             ActionsAst::Workflow {
@@ -963,5 +1109,29 @@ jobs:
             }
             _ => panic!("unexpected workflow"),
         }
+    }
+
+    #[test]
+    fn invalid_inputs_are_collected() {
+        let mut source_map = crate::actions_parser::source_map::SourceMap::new();
+        let s = r#"
+name: Bad
+on: [push, 1]
+jobs:
+  test:
+    runs-on: 123
+    steps:
+      - run: if
+"#;
+        let source_id = source_map.add_yaml(
+            std::path::PathBuf::from("bad.yml"),
+            "workflow".to_string(),
+            s.to_string(),
+        );
+        let (root, arena, errors) =
+            crate::actions_parser::parse_actions_yaml(&mut source_map, &source_id).unwrap();
+        let tree = crate::actions_parser::format_actions_tree(&arena, &root);
+        assert!(!tree.is_empty());
+        assert!(!errors.is_empty());
     }
 }
