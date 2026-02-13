@@ -256,8 +256,8 @@ fn is_executable_file(path: &Path) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{check_workflow_tools, is_shell_builtin};
-    use crate::action_catalog::{ActionCatalog, WellKnownAction};
+    use super::{PreflightStatus, check_workflow_tools, is_shell_builtin};
+    use crate::action_catalog::{ActionCatalog, WellKnownAction, load_well_known_actions};
     use crate::actions_parser;
 
     #[test]
@@ -305,5 +305,59 @@ jobs:
         let report = check_workflow_tools(root, &arena, &catalog);
         assert!(report.required_tools.contains(&"cargo".to_string()));
         assert!(report.required_tools.contains(&"git".to_string()));
+    }
+
+    #[test]
+    fn fixture_mixed_uses_tracks_unknown_and_known() {
+        let yaml = std::fs::read_to_string("test/uses_mixed.yml").unwrap();
+        let mut source_map = actions_parser::source_map::SourceMap::new();
+        let source_id = source_map.add_yaml(
+            std::path::PathBuf::from("test/uses_mixed.yml"),
+            "workflow".to_string(),
+            yaml,
+        );
+        let (root, arena, errs) =
+            actions_parser::parse_actions_yaml(&mut source_map, &source_id).unwrap();
+        assert!(errs.is_empty());
+
+        let catalog = load_well_known_actions().unwrap();
+        let report = check_workflow_tools(root, &arena, &catalog);
+
+        assert!(report.required_tools.contains(&"cargo".to_string()));
+        assert!(report.required_tools.contains(&"git".to_string()));
+        assert!(
+            report
+                .unknown_uses
+                .contains(&"octo-org/custom-action@v1".to_string())
+        );
+        assert!(
+            !report
+                .unknown_uses
+                .contains(&"actions/checkout@v4".to_string())
+        );
+    }
+
+    #[test]
+    fn fixture_missing_tool_fails_preflight() {
+        let yaml = std::fs::read_to_string("test/missing_tool.yml").unwrap();
+        let mut source_map = actions_parser::source_map::SourceMap::new();
+        let source_id = source_map.add_yaml(
+            std::path::PathBuf::from("test/missing_tool.yml"),
+            "workflow".to_string(),
+            yaml,
+        );
+        let (root, arena, errs) =
+            actions_parser::parse_actions_yaml(&mut source_map, &source_id).unwrap();
+        assert!(errs.is_empty());
+
+        let catalog: ActionCatalog = ActionCatalog::new();
+        let report = check_workflow_tools(root, &arena, &catalog);
+
+        assert_eq!(report.status(), PreflightStatus::FailMissingTools);
+        assert!(
+            report
+                .missing_tools
+                .contains(&"definitely_not_installed_tool".to_string())
+        );
     }
 }

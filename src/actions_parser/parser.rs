@@ -85,6 +85,7 @@ impl ActionsParser {
             });
         }
     }
+    #[cfg(test)]
     fn errors(&self) -> &[ActionsParseError] {
         &self.errors
     }

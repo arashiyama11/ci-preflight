@@ -53,9 +53,7 @@ fn main() -> Result<()> {
             }
         }
 
-        let catalog = action_catalog::load_well_known_actions(std::path::Path::new(
-            "data/well_known_actions.json",
-        ))?;
+        let catalog = action_catalog::load_well_known_actions()?;
         let report = env_check::check_workflow_tools(root, &arena, &catalog);
 
         println!("required: {}", report.required_tools.join(", "));

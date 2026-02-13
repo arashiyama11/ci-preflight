@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use super::arena::AstId;
 use std::collections::BTreeMap;
 

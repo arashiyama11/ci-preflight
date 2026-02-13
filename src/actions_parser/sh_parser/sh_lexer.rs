@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use super::sh_token::{ShToken, ShTokenKind, Span, WordKind};
 use crate::actions_parser::source_map::SourceId;
 use std::{collections::VecDeque, result::Result};
@@ -300,7 +302,6 @@ mod lexer_test {
         let program = "echo $(pwd)";
         let id = SourceId(0);
         let mut lexer = Lexer::new(program.chars().collect(), id);
-        let mut i = 0;
         loop {
             match lexer.next_token() {
                 Ok(token) => {
@@ -317,8 +318,6 @@ mod lexer_test {
                     break;
                 }
             }
-
-            i += 1;
         }
     }
 
@@ -428,9 +427,6 @@ else
     echo \"x is less than 3\"
 fi
 ";
-
-        let lexer = Lexer::new(program.chars().collect(), SourceId(0));
-        let mut i = 0;
         let expected = vec![
             ShTokenKind::NewLine,
             ShTokenKind::Word(WordKind::Word),
@@ -503,8 +499,8 @@ do
 done
 ";
         let mut lexer = Lexer::new(program.chars().collect(), SourceId(0));
-        let mut i = 0;
-        let expected = vec![
+        let mut _i = 0;
+        let _expected = vec![
             ShTokenKind::Comment,
             ShTokenKind::NewLine,
             ShTokenKind::Word(WordKind::Word),
@@ -544,7 +540,7 @@ done
                 }
             }
 
-            i += 1;
+            _i += 1;
         }
     }
 
@@ -556,8 +552,8 @@ EOF
 echo done
 ";
         let mut lexer = Lexer::new(program.chars().collect(), SourceId(0));
-        let mut i = 0;
-        let expected = vec![
+        let mut _i = 0;
+        let _expected = vec![
             ShTokenKind::Word(WordKind::Name),
             ShTokenKind::Redir,
             ShTokenKind::Word(WordKind::Name),
@@ -586,7 +582,7 @@ echo done
                     break;
                 }
             }
-            i += 1;
+            _i += 1;
         }
     }
 

@@ -1,7 +1,0 @@
-{
-  "actions/checkout": {
-    "required_tools": ["git"],
-    "confidence": "high",
-    "notes": "checkout requires git in runner context"
-  }
-}

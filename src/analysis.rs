@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use crate::actions_parser::actions_ast::ActionsAst;
 use crate::actions_parser::arena::{AstArena, AstId};
 use crate::actions_parser::sh_parser::sh_ast::ShAstNode;

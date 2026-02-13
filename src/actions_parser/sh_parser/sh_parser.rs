@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use super::sh_ast::{AndOrItem, AndOrOp, ListItem, SeparatorKind, ShAstNode, ShProgram};
 use super::sh_token::{ShToken, ShTokenKind, WordKind};
 use crate::actions_parser::arena::{AstArena, AstId};
@@ -102,7 +104,6 @@ impl ShParser {
         {
             Ok(())
         } else {
-            eprintln!("require_end_of_line: unexpected end of line");
             Err(ParseError::InternalError("require_end_of_line"))
         }
     }
@@ -174,13 +175,6 @@ impl ShParser {
                 should_break = true;
             }
 
-            println!(
-                "parse_list tok: {:?} {} {:?}",
-                tok,
-                tok.text(&self.src),
-                end_words
-            );
-
             let sep = match &tok.kind {
                 ShTokenKind::NewLine | ShTokenKind::SemiColon | ShTokenKind::Eof => {
                     SeparatorKind::Seq
@@ -226,7 +220,6 @@ impl ShParser {
 
         loop {
             let tok = &self.input[self.pos];
-            println!("and_or: {:?} {}", tok, tok.text(&self.src));
             if end_tokens.contains(&tok.kind) {
                 break;
             }
@@ -238,7 +231,6 @@ impl ShParser {
 
             if matches!(tok.kind, ShTokenKind::Word(_)) && end_words.contains(&tok.text(&self.src))
             {
-                println!("break since word");
                 break;
             }
 
@@ -280,7 +272,6 @@ impl ShParser {
             }
         }
 
-        println!("first: {:?}", first);
         let first = first.ok_or(ParseError::InternalError("parse_and_or"))?;
 
         let node = ShAstNode::AndOr { first, rest };
@@ -392,7 +383,6 @@ impl ShParser {
             ShTokenKind::LParen => self.parse_subshell(),
             ShTokenKind::LBrace => self.parse_group(),
             _ => {
-                eprintln!("reach {:?}", tok);
                 let err = ParseError::UnexpectedToken(tok.clone());
                 self.record_error(err);
                 return Ok(self.recover_unknown());
@@ -415,8 +405,6 @@ impl ShParser {
                 self.recover_unknown()
             }
         };
-        println!("!!!!!parse cond {:?}", self.input[self.pos]);
-        println!("{}", self.input[self.pos].text(&self.src));
         if let Err(err) = self.expect_current_word(&["then"]) {
             self.record_error(err);
             return Ok(self.recover_unknown());
@@ -430,9 +418,6 @@ impl ShParser {
                 self.recover_unknown()
             }
         };
-
-        println!("!!!!!parse then block {:?}", self.input[self.pos]);
-        println!("{}", self.input[self.pos].text(&self.src));
 
         let else_part: Option<AstId> = match self.input[self.pos].text(&self.src) {
             "fi" => None,
@@ -695,7 +680,6 @@ impl ShParser {
 
             let s = tok.text(&self.src);
 
-            println!("simple: {:?} {}", tok, s);
             match &tok.kind {
                 ShTokenKind::Word(_) => {
                     if is_digits(s) {
@@ -713,7 +697,6 @@ impl ShParser {
                         let node = ShAstNode::Assignment(s.to_string());
                         assignments.push(self.arena.alloc_sh(node));
                     } else if end_words.contains(&s) {
-                        println!("break end_word");
                         break;
                     } else {
                         let node = ShAstNode::Word(s.to_string());
@@ -884,15 +867,15 @@ fn fmt_node(id: AstId, arena: &AstArena, indent: usize, out: &mut String) {
         } => {
             push_line(out, indent, "SimpleCommand");
             push_line(out, indent + 1, "assignments");
-            for (index, node_id) in assignments.iter().enumerate() {
+            for node_id in assignments {
                 fmt_node(*node_id, arena, indent + 2, out);
             }
             push_line(out, indent + 1, "argv");
-            for (index, node_id) in argv.iter().enumerate() {
+            for node_id in argv {
                 fmt_node(*node_id, arena, indent + 2, out);
             }
             push_line(out, indent + 1, "redirs");
-            for (index, node_id) in redirs.iter().enumerate() {
+            for node_id in redirs {
                 fmt_node(*node_id, arena, indent + 2, out);
             }
         }

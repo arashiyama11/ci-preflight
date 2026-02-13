@@ -27,6 +27,7 @@ pub struct ShParseErrorWithArena {
     pub arena: AstArena,
 }
 
+#[allow(dead_code)]
 pub fn parse_sh(
     source_map: &SourceMap,
     source_id: &SourceId,
