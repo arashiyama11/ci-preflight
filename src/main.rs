@@ -17,6 +17,10 @@ struct Cli {
     /// Parse a workflow file and fail if required tools are missing on current PATH.
     #[arg(long = "check-tools", value_name = "FILE")]
     check_tools: Option<PathBuf>,
+
+    /// Parse a workflow file and print `command --- CmdKind` lines.
+    #[arg(long = "print-cmd-kind", value_name = "FILE")]
+    print_cmd_kind: Option<PathBuf>,
 }
 
 fn main() -> Result<()> {
@@ -75,6 +79,26 @@ fn main() -> Result<()> {
                 std::process::exit(2);
             }
         }
+    }
+
+    if let Some(path) = cli.print_cmd_kind {
+        let text = std::fs::read_to_string(&path)?;
+        let mut source_map = actions_parser::source_map::SourceMap::new();
+        let source_id = source_map.add_yaml(path, "workflow".to_string(), text.clone());
+        let (root, arena, errors) =
+            actions_parser::parse_actions_yaml(&mut source_map, &source_id)?;
+
+        if !errors.is_empty() {
+            eprintln!("parse warnings:");
+            for err in errors {
+                eprintln!("- {}", err);
+            }
+        }
+
+        let analysis = analysis::analyze_actions(root, &arena);
+        let annotated = analysis::annotate_yaml_with_cmd_kind(&text, &analysis);
+        print!("{annotated}");
+        return Ok(());
     }
 
     println!("Hello, world!");
