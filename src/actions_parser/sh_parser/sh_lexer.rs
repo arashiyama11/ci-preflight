@@ -80,6 +80,16 @@ impl Lexer {
         }
     }
 
+    fn eat_line_continuation(&mut self) {
+        while self.position + 1 < self.input.len()
+            && self.input[self.position] == '\\'
+            && self.input[self.position + 1] == '\n'
+        {
+            self.position += 2;
+            self.eat_ws();
+        }
+    }
+
     pub fn next_token(&mut self) -> Result<ShToken, LexerError> {
         if let Some(tok) = self.pending.pop_front() {
             return Ok(tok);
@@ -89,6 +99,12 @@ impl Lexer {
             return Ok(ShToken::new(ShTokenKind::Eof, span));
         }
         self.eat_ws();
+        self.eat_line_continuation();
+        self.eat_ws();
+        if self.input.len() <= self.position {
+            let span = Span::new(self.position, self.source_id, 0);
+            return Ok(ShToken::new(ShTokenKind::Eof, span));
+        }
         let ch = self.input[self.position];
         let tok = match ch {
             '\n' => ShToken::new(
@@ -653,6 +669,35 @@ echo done
             ShTokenKind::Word(WordKind::Word),
             ShTokenKind::Redir,
             ShTokenKind::Word(WordKind::Word),
+        ];
+        let mut lexer = Lexer::new(program.chars().collect(), SourceId(0));
+        let mut i = 0;
+        loop {
+            match lexer.next_token() {
+                Ok(token) => {
+                    if token.kind == ShTokenKind::Eof {
+                        break;
+                    }
+                    assert_eq!(token.kind, expected[i]);
+                }
+                Err(err) => {
+                    eprintln!("{:?}", err);
+                    break;
+                }
+            }
+            i += 1;
+        }
+    }
+
+    #[test]
+    fn line_continuation_backslash_newline_is_ignored() {
+        let program = "echo hello \\\n  | cat\n";
+        let expected = vec![
+            ShTokenKind::Word(WordKind::Name),
+            ShTokenKind::Word(WordKind::Name),
+            ShTokenKind::Pipe,
+            ShTokenKind::Word(WordKind::Name),
+            ShTokenKind::NewLine,
         ];
         let mut lexer = Lexer::new(program.chars().collect(), SourceId(0));
         let mut i = 0;

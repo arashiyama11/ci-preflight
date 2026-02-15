@@ -1,7 +1,10 @@
-use crate::action_catalog::{ActionCatalog, required_tools_for_uses};
+use crate::action_catalog::{ActionCatalog, required_tools_for_uses, shell_input_keys_for_uses};
 use crate::actions_parser::actions_ast::ActionsAst;
 use crate::actions_parser::arena::{AstArena, AstId};
+use crate::actions_parser::sh_parser::parse_sh;
 use crate::actions_parser::sh_parser::sh_ast::ShAstNode;
+use crate::actions_parser::source_map::SourceMap;
+use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
@@ -96,7 +99,7 @@ fn collect_from_actions(
         ActionsAst::RunStep { run, .. } => {
             collect_from_sh(*run, arena, required, unknown_commands);
         }
-        ActionsAst::UsesStep { uses, .. } => {
+        ActionsAst::UsesStep { uses, with, .. } => {
             if let Some(tools) = required_tools_for_uses(uses, catalog) {
                 for tool in tools {
                     let normalized = tool.trim();
@@ -107,8 +110,41 @@ fn collect_from_actions(
             } else {
                 unknown_uses.insert(uses.clone());
             }
+            collect_from_uses_shell_inputs(
+                uses,
+                with.as_ref(),
+                catalog,
+                required,
+                unknown_commands,
+            );
         }
         _ => {}
+    }
+}
+
+fn collect_from_uses_shell_inputs(
+    uses: &str,
+    with: Option<&BTreeMap<String, String>>,
+    catalog: &ActionCatalog,
+    required: &mut BTreeSet<String>,
+    unknown_commands: &mut BTreeSet<String>,
+) {
+    let Some(with) = with else {
+        return;
+    };
+    let Some(keys) = shell_input_keys_for_uses(uses, catalog) else {
+        return;
+    };
+    for key in keys {
+        let Some(script) = with.get(key) else {
+            continue;
+        };
+        let mut source_map = SourceMap::new();
+        let source_id = source_map.add_sh_file(PathBuf::from("<with-shell-input>"), script.clone());
+        let Ok((program, arena)) = parse_sh(&source_map, &source_id) else {
+            continue;
+        };
+        collect_from_sh(program.list, &arena, required, unknown_commands);
     }
 }
 
@@ -297,6 +333,7 @@ jobs:
             "actions/checkout".to_string(),
             ActionCatalogEntry {
                 required_tools: vec!["git".to_string()],
+                shell_inputs: vec![],
                 cmd_kind: Some("EnvSetup".to_string()),
                 special_action: Some("Checkout".to_string()),
                 confidence: None,
@@ -361,5 +398,37 @@ jobs:
                 .missing_tools
                 .contains(&"definitely_not_installed_tool".to_string())
         );
+    }
+
+    #[test]
+    fn collects_tools_from_uses_shell_inputs() {
+        let yaml = r#"
+name: CI
+on: push
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: nick-fields/retry@v3
+        with:
+          command: |
+            echo hello
+            cargo test
+"#;
+
+        let mut source_map = actions_parser::source_map::SourceMap::new();
+        let source_id = source_map.add_yaml(
+            std::path::PathBuf::from("wf.yml"),
+            "workflow".to_string(),
+            yaml.to_string(),
+        );
+        let (root, arena, errs) =
+            actions_parser::parse_actions_yaml(&mut source_map, &source_id).unwrap();
+        assert!(errs.is_empty());
+
+        let catalog = load_action_catalog().unwrap();
+        let report = check_workflow_tools(root, &arena, &catalog);
+
+        assert!(report.required_tools.contains(&"cargo".to_string()));
     }
 }

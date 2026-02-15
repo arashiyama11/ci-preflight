@@ -8,6 +8,7 @@ const ACTION_CATALOG_YAML: &str = include_str!("../data/action_catalog.yaml");
 #[derive(Clone, Debug)]
 pub struct ActionCatalogEntry {
     pub required_tools: Vec<String>,
+    pub shell_inputs: Vec<String>,
     pub cmd_kind: Option<String>,
     pub special_action: Option<String>,
     #[allow(dead_code)]
@@ -34,6 +35,8 @@ pub enum ActionCatalogError {
     MissingRequiredTools(String),
     #[error("action `{0}` field `required_tools` must be a sequence of strings")]
     InvalidRequiredTools(String),
+    #[error("action `{0}` field `shell_inputs` must be a sequence of strings")]
+    InvalidShellInputs(String),
     #[error("action `{0}` field `{1}` must be a string")]
     InvalidStringField(String, &'static str),
     #[error("action `{0}` field `cmd_kind` has invalid value `{1}`")]
@@ -90,6 +93,7 @@ fn parse_action_entry(key: &str, node: &Yaml) -> Result<ActionCatalogEntry, Acti
                 .ok_or_else(|| ActionCatalogError::InvalidRequiredTools(key.to_string()))
         })
         .collect::<Result<Vec<_>, _>>()?;
+    let shell_inputs = parse_optional_string_list(map, key, "shell_inputs")?;
 
     let cmd_kind = get_optional_string(map, key, "cmd_kind")?;
     if let Some(value) = cmd_kind.as_deref() {
@@ -106,11 +110,32 @@ fn parse_action_entry(key: &str, node: &Yaml) -> Result<ActionCatalogEntry, Acti
 
     Ok(ActionCatalogEntry {
         required_tools,
+        shell_inputs,
         cmd_kind,
         special_action,
         confidence,
         notes,
     })
+}
+
+fn parse_optional_string_list(
+    map: &yaml_rust2::yaml::Hash,
+    action: &str,
+    field: &'static str,
+) -> Result<Vec<String>, ActionCatalogError> {
+    let Some(node) = map.get(&Yaml::String(field.to_string())) else {
+        return Ok(Vec::new());
+    };
+    let list = node
+        .as_vec()
+        .ok_or_else(|| ActionCatalogError::InvalidShellInputs(action.to_string()))?;
+    list.iter()
+        .map(|item| {
+            item.as_str()
+                .map(ToString::to_string)
+                .ok_or_else(|| ActionCatalogError::InvalidShellInputs(action.to_string()))
+        })
+        .collect()
 }
 
 fn get_optional_string(
@@ -169,6 +194,14 @@ pub fn required_tools_for_uses<'a>(uses: &str, catalog: &'a ActionCatalog) -> Op
     catalog.get(&key).map(|v| v.required_tools.as_slice())
 }
 
+pub fn shell_input_keys_for_uses<'a>(
+    uses: &str,
+    catalog: &'a ActionCatalog,
+) -> Option<&'a [String]> {
+    let key = normalize_uses(uses)?;
+    catalog.get(&key).map(|v| v.shell_inputs.as_slice())
+}
+
 pub fn action_entry_for_uses<'a>(
     uses: &str,
     catalog: &'a ActionCatalog,
@@ -182,6 +215,7 @@ mod tests {
     use super::{
         ActionCatalog, ActionCatalogEntry, ActionCatalogError, action_entry_for_uses,
         load_action_catalog, normalize_uses, parse_action_catalog_yaml, required_tools_for_uses,
+        shell_input_keys_for_uses,
     };
     use std::collections::BTreeMap;
 
@@ -210,6 +244,7 @@ mod tests {
             "actions/checkout".to_string(),
             ActionCatalogEntry {
                 required_tools: vec!["git".to_string()],
+                shell_inputs: vec![],
                 cmd_kind: Some("EnvSetup".to_string()),
                 special_action: Some("Checkout".to_string()),
                 confidence: Some("high".to_string()),
@@ -228,6 +263,14 @@ mod tests {
         let entry = action_entry_for_uses("actions/checkout@v4", &catalog).unwrap();
         assert_eq!(entry.cmd_kind.as_deref(), Some("EnvSetup"));
         assert_eq!(entry.special_action.as_deref(), Some("Checkout"));
+        assert!(entry.shell_inputs.is_empty());
+    }
+
+    #[test]
+    fn resolve_shell_inputs() {
+        let catalog = load_action_catalog().unwrap();
+        let keys = shell_input_keys_for_uses("nick-fields/retry@v3", &catalog).unwrap();
+        assert_eq!(keys, ["command"]);
     }
 
     #[test]

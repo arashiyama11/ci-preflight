@@ -2,11 +2,16 @@
 
 use crate::action_catalog::{
     ActionCatalog, action_entry_for_uses, load_action_catalog, normalize_uses,
+    shell_input_keys_for_uses,
 };
 use crate::actions_parser::actions_ast::ActionsAst;
 use crate::actions_parser::arena::{AstArena, AstId};
+use crate::actions_parser::sh_parser::parse_sh;
 use crate::actions_parser::sh_parser::sh_ast::ShAstNode;
+use crate::actions_parser::source_map::SourceMap;
 use crate::cmd_kind_rules::{RuleCmdKind, classify_simple_command};
+use std::collections::BTreeMap;
+use std::path::PathBuf;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CmdKind {
@@ -130,10 +135,19 @@ fn analyze_step_with_catalog(
 ) -> StepPlan {
     let commands = match arena.get_actions(&step_id) {
         ActionsAst::RunStep { run, .. } => analyze_run_step(*run, arena),
-        ActionsAst::UsesStep { uses, .. } => vec![CommandPlan {
-            ast_id: step_id,
-            attr: analyze_uses_step(uses, catalog),
-        }],
+        ActionsAst::UsesStep { uses, with, .. } => {
+            let mut commands = vec![CommandPlan {
+                ast_id: step_id,
+                attr: analyze_uses_step(uses, catalog),
+            }];
+            commands.extend(analyze_uses_shell_inputs(
+                step_id,
+                uses,
+                with.as_ref(),
+                catalog,
+            ));
+            commands
+        }
         _ => Vec::new(),
     };
     StepPlan { step_id, commands }
@@ -176,6 +190,58 @@ fn analyze_uses_step(uses: &str, catalog: Option<&ActionCatalog>) -> Attr {
     attr.special_action = special_action;
     attr.tools.push(uses.to_string());
     attr
+}
+
+fn analyze_uses_shell_inputs(
+    step_id: AstId,
+    uses: &str,
+    with: Option<&BTreeMap<String, String>>,
+    catalog: Option<&ActionCatalog>,
+) -> Vec<CommandPlan> {
+    let Some(with) = with else {
+        return Vec::new();
+    };
+    let Some(catalog) = catalog else {
+        return Vec::new();
+    };
+    let Some(keys) = shell_input_keys_for_uses(uses, catalog) else {
+        return Vec::new();
+    };
+
+    let mut out = Vec::new();
+    for key in keys {
+        let Some(script) = with.get(key) else {
+            continue;
+        };
+        for words in parse_shell_command_words(script) {
+            if words.is_empty() {
+                continue;
+            }
+            out.push(CommandPlan {
+                ast_id: step_id,
+                attr: Attr {
+                    kind: Some(classify_simple_command_from_words(&words)),
+                    confidence: 0.8,
+                    tools: vec![words.join(" ")],
+                    ..Attr::default()
+                },
+            });
+        }
+    }
+    out
+}
+
+fn parse_shell_command_words(script: &str) -> Vec<Vec<String>> {
+    let mut source_map = SourceMap::new();
+    let source_id = source_map.add_sh_file(PathBuf::from("<with-shell-input>"), script.to_string());
+    let Ok((program, arena)) = parse_sh(&source_map, &source_id) else {
+        return Vec::new();
+    };
+    extract_simple_commands(program.list, &arena)
+        .into_iter()
+        .filter_map(|id| read_simple_command_words(id, &arena))
+        .filter(|words| !words.is_empty())
+        .collect()
 }
 
 pub fn extract_simple_commands(run_id: AstId, arena: &AstArena) -> Vec<AstId> {
@@ -237,6 +303,7 @@ pub fn annotate_yaml_with_cmd_kind(yaml: &str, analysis: &AnalysisResult) -> Str
     let mut step_index = 0usize;
     let mut out = String::new();
     let lines = yaml.lines().collect::<Vec<_>>();
+    let catalog = load_action_catalog().ok();
     let mut i = 0usize;
 
     while i < lines.len() {
@@ -244,17 +311,157 @@ pub fn annotate_yaml_with_cmd_kind(yaml: &str, analysis: &AnalysisResult) -> Str
         let trimmed = line.trim_start();
 
         if is_uses_line(trimmed) {
-            if let Some(step) = nth_non_empty_step(analysis, step_index) {
+            let Some(step) = nth_non_empty_step(analysis, step_index) else {
+                out.push_str(line);
+                out.push('\n');
+                i += 1;
+                continue;
+            };
+            step_index += 1;
+
+            let uses_value = extract_uses_value(trimmed);
+            let shell_input_keys = uses_value
+                .as_deref()
+                .and_then(|uses| {
+                    catalog
+                        .as_ref()
+                        .and_then(|c| shell_input_keys_for_uses(uses, c))
+                })
+                .map(|keys| keys.iter().map(|k| k.as_str()).collect::<Vec<_>>())
+                .unwrap_or_default();
+
+            if shell_input_keys.is_empty() || step.commands.len() <= 1 {
                 out.push_str(line);
                 out.push_str(" --- ");
                 out.push_str(&format_step_kinds(step));
                 out.push('\n');
-                step_index += 1;
-            } else {
-                out.push_str(line);
-                out.push('\n');
+                i += 1;
+                continue;
             }
+
+            out.push_str(line);
+            out.push_str(" --- ");
+            out.push_str(&format_command_kind(&step.commands[0]));
+            out.push('\n');
             i += 1;
+
+            let step_base_indent = leading_spaces(line);
+            let mut command_index = 1usize;
+            while i < lines.len() {
+                let body_line = lines[i];
+                let body_trimmed = body_line.trim();
+                let body_indent = leading_spaces(body_line);
+                if !body_trimmed.is_empty()
+                    && body_indent <= step_base_indent
+                    && body_trimmed.starts_with('-')
+                {
+                    break;
+                }
+
+                if let Some((key, value)) = parse_mapping_key_value(body_trimmed) {
+                    if shell_input_keys.iter().any(|k| *k == key) {
+                        if value == "|" || value == ">" {
+                            out.push_str(body_line);
+                            out.push('\n');
+                            i += 1;
+
+                            let key_indent = body_indent;
+                            let mut in_continuation = false;
+                            while i < lines.len() {
+                                let script_line = lines[i];
+                                let script_trimmed = script_line.trim();
+                                let script_indent = leading_spaces(script_line);
+                                if !script_trimmed.is_empty() && script_indent <= key_indent {
+                                    break;
+                                }
+
+                                if script_trimmed.is_empty()
+                                    || is_shell_comment_line(script_trimmed)
+                                {
+                                    out.push_str(script_line);
+                                } else {
+                                    out.push_str(script_line);
+                                    if !in_continuation {
+                                        let line_cmd_count =
+                                            estimate_simple_command_count_in_line(script_trimmed);
+                                        if line_cmd_count > 0 {
+                                            let mut labels = Vec::new();
+                                            if command_index < step.commands.len() {
+                                                let end = (command_index + line_cmd_count)
+                                                    .min(step.commands.len());
+                                                labels.extend(
+                                                    step.commands[command_index..end]
+                                                        .iter()
+                                                        .map(format_command_kind),
+                                                );
+                                                command_index = end;
+                                            }
+                                            if labels.len() < line_cmd_count {
+                                                let fallback =
+                                                    classify_line_kinds_by_words(script_trimmed);
+                                                labels.extend(
+                                                    fallback
+                                                        .into_iter()
+                                                        .take(
+                                                            line_cmd_count
+                                                                .saturating_sub(labels.len()),
+                                                        )
+                                                        .map(|k| k.as_str().to_string()),
+                                                );
+                                            }
+                                            if labels.is_empty() {
+                                                labels.push(CmdKind::Other.as_str().to_string());
+                                            }
+                                            out.push_str(" --- ");
+                                            out.push_str(&labels.join(" && "));
+                                        }
+                                    }
+                                }
+                                in_continuation = has_trailing_unescaped_backslash(script_trimmed);
+                                out.push('\n');
+                                i += 1;
+                            }
+                            continue;
+                        }
+
+                        out.push_str(body_line);
+                        let line_cmd_count = estimate_simple_command_count_in_line(value);
+                        if line_cmd_count > 0 {
+                            let mut labels = Vec::new();
+                            if command_index < step.commands.len() {
+                                let end = (command_index + line_cmd_count).min(step.commands.len());
+                                labels.extend(
+                                    step.commands[command_index..end]
+                                        .iter()
+                                        .map(format_command_kind),
+                                );
+                                command_index = end;
+                            }
+                            if labels.len() < line_cmd_count {
+                                let fallback = classify_line_kinds_by_words(value);
+                                labels.extend(
+                                    fallback
+                                        .into_iter()
+                                        .take(line_cmd_count.saturating_sub(labels.len()))
+                                        .map(|k| k.as_str().to_string()),
+                                );
+                            }
+                            if labels.is_empty() {
+                                labels.push(CmdKind::Other.as_str().to_string());
+                            }
+                            out.push_str(" --- ");
+                            out.push_str(&labels.join(" && "));
+                        }
+                        out.push('\n');
+                        i += 1;
+                        continue;
+                    }
+                }
+
+                out.push_str(body_line);
+                out.push('\n');
+                i += 1;
+            }
             continue;
         }
 
@@ -344,6 +551,29 @@ pub fn annotate_yaml_with_cmd_kind(yaml: &str, analysis: &AnalysisResult) -> Str
 
 fn is_uses_line(trimmed: &str) -> bool {
     trimmed.starts_with("- uses:") || trimmed.starts_with("uses:")
+}
+
+fn extract_uses_value(trimmed: &str) -> Option<String> {
+    let rest = if let Some(rest) = trimmed.strip_prefix("- uses:") {
+        rest
+    } else {
+        trimmed.strip_prefix("uses:")?
+    };
+    let value = rest.split('#').next().unwrap_or(rest).trim();
+    if value.is_empty() {
+        None
+    } else {
+        Some(value.to_string())
+    }
+}
+
+fn parse_mapping_key_value(trimmed: &str) -> Option<(&str, &str)> {
+    let (key, value) = trimmed.split_once(':')?;
+    let key = key.trim();
+    if key.is_empty() {
+        return None;
+    }
+    Some((key, value.trim()))
 }
 
 fn is_run_line(trimmed: &str) -> bool {
@@ -734,9 +964,11 @@ mod tests {
         CmdKind, PlanOptions, analyze_actions, analyze_simple_command, annotate_yaml_with_cmd_kind,
         build_execution_plan, format_cmd_kind_lines,
     };
+    use crate::action_catalog::{ActionCatalog, ActionCatalogEntry};
     use crate::actions_parser::actions_ast::{ActionsAst, RunsOn};
     use crate::actions_parser::arena::AstArena;
     use crate::actions_parser::sh_parser::sh_ast::{ListItem, SeparatorKind, ShAstNode};
+    use std::collections::BTreeMap;
 
     fn alloc_simple_command(
         arena: &mut AstArena,
@@ -857,6 +1089,42 @@ mod tests {
             analysis.unknown_uses,
             vec!["./.github/actions/setup".to_string()]
         );
+    }
+
+    #[test]
+    fn uses_step_shell_inputs_are_classified_as_commands() {
+        let mut arena = AstArena::new();
+        let mut with = BTreeMap::new();
+        with.insert("command".to_string(), "echo hello\ncargo test".to_string());
+        let step = arena.alloc_actions(ActionsAst::UsesStep {
+            uses: "nick-fields/retry@v3".to_string(),
+            name: None,
+            id: None,
+            if_cond: None,
+            env: None,
+            with: Some(with),
+            timeout_minutes: None,
+            continue_on_error: None,
+        });
+
+        let mut catalog: ActionCatalog = ActionCatalog::new();
+        catalog.insert(
+            "nick-fields/retry".to_string(),
+            ActionCatalogEntry {
+                required_tools: vec![],
+                shell_inputs: vec!["command".to_string()],
+                cmd_kind: Some("Other".to_string()),
+                special_action: None,
+                confidence: None,
+                notes: None,
+            },
+        );
+
+        let plan = super::analyze_step_with_catalog(step, &arena, Some(&catalog));
+        assert_eq!(plan.commands.len(), 3);
+        assert_eq!(plan.commands[0].attr.kind, Some(CmdKind::Other));
+        assert_eq!(plan.commands[1].attr.kind, Some(CmdKind::Other));
+        assert_eq!(plan.commands[2].attr.kind, Some(CmdKind::Test));
     }
 
     #[test]
@@ -1034,6 +1302,59 @@ jobs:
         assert!(annotated.contains("      - run: |\n"));
         assert!(annotated.contains("          cargo build --- TestSetup\n"));
         assert!(annotated.contains("          cargo test --- Test\n"));
+    }
+
+    #[test]
+    fn annotate_yaml_prints_uses_shell_input_on_script_lines() {
+        let analysis = super::AnalysisResult {
+            steps: vec![super::StepPlan {
+                step_id: crate::actions_parser::arena::AstId(1),
+                commands: vec![
+                    super::CommandPlan {
+                        ast_id: crate::actions_parser::arena::AstId(10),
+                        attr: super::Attr {
+                            kind: Some(CmdKind::Other),
+                            tools: vec!["reactivecircus/android-emulator-runner@v2".to_string()],
+                            ..super::Attr::default()
+                        },
+                    },
+                    super::CommandPlan {
+                        ast_id: crate::actions_parser::arena::AstId(11),
+                        attr: super::Attr {
+                            kind: Some(CmdKind::Other),
+                            tools: vec!["adb install -r app.apk".to_string()],
+                            ..super::Attr::default()
+                        },
+                    },
+                    super::CommandPlan {
+                        ast_id: crate::actions_parser::arena::AstId(12),
+                        attr: super::Attr {
+                            kind: Some(CmdKind::Test),
+                            tools: vec!["cargo test".to_string()],
+                            ..super::Attr::default()
+                        },
+                    },
+                ],
+            }],
+            unknown_uses: vec![],
+            errors: vec![],
+        };
+        let yaml = r#"jobs:
+  test:
+    steps:
+      - uses: reactivecircus/android-emulator-runner@v2
+        with:
+          script: |
+            adb install -r app.apk
+            cargo test
+"#;
+        let annotated = annotate_yaml_with_cmd_kind(yaml, &analysis);
+
+        assert!(
+            annotated.contains("- uses: reactivecircus/android-emulator-runner@v2 --- Other\n")
+        );
+        assert!(annotated.contains("            adb install -r app.apk --- Other\n"));
+        assert!(annotated.contains("            cargo test --- Test\n"));
     }
 
     #[test]

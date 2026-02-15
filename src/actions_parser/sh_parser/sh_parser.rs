@@ -739,6 +739,13 @@ impl ShParser {
                     self.pos += 1;
                     continue;
                 }
+                ShTokenKind::LParen
+                | ShTokenKind::RParen
+                | ShTokenKind::LBrace
+                | ShTokenKind::RBrace => {
+                    let node = ShAstNode::Word(s.to_string());
+                    argv.push(self.arena.alloc_sh(node));
+                }
 
                 ShTokenKind::Eof
                 | ShTokenKind::NewLine
@@ -1375,5 +1382,14 @@ fi
 "#,
             parse_and_format(program)
         );
+    }
+
+    #[test]
+    fn command_substitution_with_line_continuation_does_not_fall_back_unknown() {
+        let program = r#"LATEST_RELEASE=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
+  "https://api.github.com/repos/${{ github.repository }}/releases/latest" \
+  | jq -r '.tag_name')"#;
+        let tree = parse_and_format(program);
+        assert!(!tree.contains("Unknown"));
     }
 }
