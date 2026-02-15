@@ -5,6 +5,7 @@ use std::path::PathBuf;
 mod action_catalog;
 mod actions_parser;
 mod analysis;
+mod cmd_kind_rules;
 mod env_check;
 
 #[derive(Debug, clap::Parser)]
@@ -57,7 +58,7 @@ fn main() -> Result<()> {
             }
         }
 
-        let catalog = action_catalog::load_well_known_actions()?;
+        let catalog = action_catalog::load_action_catalog()?;
         let report = env_check::check_workflow_tools(root, &arena, &catalog);
 
         println!("required: {}", report.required_tools.join(", "));
@@ -97,10 +98,52 @@ fn main() -> Result<()> {
 
         let analysis = analysis::analyze_actions(root, &arena);
         let annotated = analysis::annotate_yaml_with_cmd_kind(&text, &analysis);
-        print!("{annotated}");
+        let colored = colorize_cmd_kind_annotations(&annotated);
+        print!("{colored}");
         return Ok(());
     }
 
     println!("Hello, world!");
     Ok(())
+}
+
+fn colorize_cmd_kind_annotations(text: &str) -> String {
+    const GREEN: &str = "\x1b[32m";
+    const RESET: &str = "\x1b[0m";
+
+    text.lines()
+        .map(|line| {
+            if let Some((left, right)) = line.split_once(" --- ") {
+                let colored_rhs = right
+                    .split(" && ")
+                    .map(|part| format!("{GREEN}{part}{RESET}"))
+                    .collect::<Vec<_>>()
+                    .join(" && ");
+                format!("{left} --- {colored_rhs}")
+            } else {
+                line.to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+        + if text.ends_with('\n') { "\n" } else { "" }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::colorize_cmd_kind_annotations;
+
+    #[test]
+    fn colorize_only_cmd_kind_side() {
+        let input = "run: cargo test --- Test\n";
+        let out = colorize_cmd_kind_annotations(input);
+        assert!(out.contains("run: cargo test --- \u{1b}[32mTest\u{1b}[0m\n"));
+    }
+
+    #[test]
+    fn preserve_lines_without_annotation() {
+        let input = "name: CI\njobs:\n";
+        let out = colorize_cmd_kind_annotations(input);
+        assert_eq!(out, input);
+    }
 }

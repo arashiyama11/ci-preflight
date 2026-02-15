@@ -257,7 +257,7 @@ fn is_executable_file(path: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{PreflightStatus, check_workflow_tools, is_shell_builtin};
-    use crate::action_catalog::{ActionCatalog, WellKnownAction, load_well_known_actions};
+    use crate::action_catalog::{ActionCatalog, ActionCatalogEntry, load_action_catalog};
     use crate::actions_parser;
 
     #[test]
@@ -295,8 +295,10 @@ jobs:
         let mut catalog = ActionCatalog::new();
         catalog.insert(
             "actions/checkout".to_string(),
-            WellKnownAction {
+            ActionCatalogEntry {
                 required_tools: vec!["git".to_string()],
+                cmd_kind: Some("EnvSetup".to_string()),
+                special_action: Some("Checkout".to_string()),
                 confidence: None,
                 notes: None,
             },
@@ -320,7 +322,7 @@ jobs:
             actions_parser::parse_actions_yaml(&mut source_map, &source_id).unwrap();
         assert!(errs.is_empty());
 
-        let catalog = load_well_known_actions().unwrap();
+        let catalog = load_action_catalog().unwrap();
         let report = check_workflow_tools(root, &arena, &catalog);
 
         assert!(report.required_tools.contains(&"cargo".to_string()));

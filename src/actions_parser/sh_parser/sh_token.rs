@@ -55,6 +55,18 @@ impl ShToken {
     }
 
     pub fn text<'a>(&self, src: &'a str) -> &'a str {
-        &src[self.span.index..self.span.index + self.span.len]
+        let start = char_index_to_byte_offset(src, self.span.index);
+        let end = char_index_to_byte_offset(src, self.span.index + self.span.len);
+        &src[start..end]
     }
+}
+
+fn char_index_to_byte_offset(src: &str, char_index: usize) -> usize {
+    if char_index == 0 {
+        return 0;
+    }
+    src.char_indices()
+        .nth(char_index)
+        .map(|(i, _)| i)
+        .unwrap_or(src.len())
 }

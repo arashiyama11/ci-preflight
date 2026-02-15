@@ -1,9 +1,12 @@
 #![allow(dead_code)]
 
+use crate::action_catalog::{
+    ActionCatalog, action_entry_for_uses, load_action_catalog, normalize_uses,
+};
 use crate::actions_parser::actions_ast::ActionsAst;
 use crate::actions_parser::arena::{AstArena, AstId};
 use crate::actions_parser::sh_parser::sh_ast::ShAstNode;
-use crate::action_catalog::normalize_uses;
+use crate::cmd_kind_rules::{RuleCmdKind, classify_simple_command};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CmdKind {
@@ -93,23 +96,43 @@ pub struct PlannedCommand {
 }
 
 pub fn analyze_actions(root: AstId, arena: &AstArena) -> AnalysisResult {
+    let mut errors = Vec::new();
+    let catalog = match load_action_catalog() {
+        Ok(catalog) => Some(catalog),
+        Err(err) => {
+            errors.push(AnalysisError {
+                message: format!("failed to load action catalog: {err}"),
+                at: None,
+            });
+            None
+        }
+    };
+
     let mut steps = Vec::new();
     let mut unknown_uses = Vec::new();
-    collect_steps(root, arena, &mut steps, &mut unknown_uses);
-    let result = AnalysisResult {
+    collect_steps(root, arena, catalog.as_ref(), &mut steps, &mut unknown_uses);
+    AnalysisResult {
         steps,
         unknown_uses,
-        errors: Vec::new(),
-    };
-    result
+        errors,
+    }
 }
 
 pub fn analyze_step(step_id: AstId, arena: &AstArena) -> StepPlan {
+    let catalog = load_action_catalog().ok();
+    analyze_step_with_catalog(step_id, arena, catalog.as_ref())
+}
+
+fn analyze_step_with_catalog(
+    step_id: AstId,
+    arena: &AstArena,
+    catalog: Option<&ActionCatalog>,
+) -> StepPlan {
     let commands = match arena.get_actions(&step_id) {
         ActionsAst::RunStep { run, .. } => analyze_run_step(*run, arena),
         ActionsAst::UsesStep { uses, .. } => vec![CommandPlan {
             ast_id: step_id,
-            attr: analyze_uses_step(uses),
+            attr: analyze_uses_step(uses, catalog),
         }],
         _ => Vec::new(),
     };
@@ -143,13 +166,12 @@ pub fn analyze_simple_command(cmd_id: AstId, arena: &AstArena) -> Attr {
     attr
 }
 
-fn analyze_uses_step(uses: &str) -> Attr {
+fn analyze_uses_step(uses: &str, catalog: Option<&ActionCatalog>) -> Attr {
     let mut attr = Attr {
         confidence: 0.9,
         ..Attr::default()
     };
-    let special_action = classify_uses_special_action(uses);
-    let kind = classify_uses_kind(uses);
+    let (kind, special_action) = classify_uses_from_catalog(uses, catalog);
     attr.kind = Some(kind);
     attr.special_action = special_action;
     attr.tools.push(uses.to_string());
@@ -252,6 +274,7 @@ pub fn annotate_yaml_with_cmd_kind(yaml: &str, analysis: &AnalysisResult) -> Str
 
                 let base_indent = leading_spaces(line);
                 let mut command_index = 0usize;
+                let mut in_continuation = false;
                 while i < lines.len() {
                     let body_line = lines[i];
                     let body_trimmed = body_line.trim();
@@ -260,14 +283,43 @@ pub fn annotate_yaml_with_cmd_kind(yaml: &str, analysis: &AnalysisResult) -> Str
                         break;
                     }
 
-                    if body_trimmed.is_empty() || command_index >= step.commands.len() {
+                    if body_trimmed.is_empty() || is_shell_comment_line(body_trimmed) {
                         out.push_str(body_line);
                     } else {
                         out.push_str(body_line);
-                        out.push_str(" --- ");
-                        out.push_str(format_command_kind(&step.commands[command_index]).as_str());
-                        command_index += 1;
+                        if !in_continuation {
+                            let line_cmd_count =
+                                estimate_simple_command_count_in_line(body_trimmed);
+                            let mut labels = Vec::new();
+                            if line_cmd_count > 0 {
+                                if command_index < step.commands.len() {
+                                    let end =
+                                        (command_index + line_cmd_count).min(step.commands.len());
+                                    labels.extend(
+                                        step.commands[command_index..end]
+                                            .iter()
+                                            .map(format_command_kind),
+                                    );
+                                    command_index = end;
+                                }
+                                if labels.len() < line_cmd_count {
+                                    let fallback = classify_line_kinds_by_words(body_trimmed);
+                                    labels.extend(
+                                        fallback
+                                            .into_iter()
+                                            .take(line_cmd_count.saturating_sub(labels.len()))
+                                            .map(|k| k.as_str().to_string()),
+                                    );
+                                }
+                                if labels.is_empty() {
+                                    labels.push(CmdKind::Other.as_str().to_string());
+                                }
+                                out.push_str(" --- ");
+                                out.push_str(&labels.join(" && "));
+                            }
+                        }
                     }
+                    in_continuation = has_trailing_unescaped_backslash(body_trimmed);
                     out.push('\n');
                     i += 1;
                 }
@@ -303,6 +355,137 @@ fn is_block_run_line(trimmed: &str) -> bool {
         || trimmed.starts_with("- run: >")
         || trimmed.starts_with("run: |")
         || trimmed.starts_with("run: >")
+}
+
+fn is_shell_comment_line(trimmed: &str) -> bool {
+    trimmed.starts_with('#')
+}
+
+fn estimate_simple_command_count_in_line(line: &str) -> usize {
+    classify_line_kinds_by_words(line).len()
+}
+
+fn classify_line_kinds_by_words(line: &str) -> Vec<CmdKind> {
+    let segments = split_shell_segments(line);
+    let mut out = Vec::new();
+    for segment in segments {
+        let trimmed = segment.trim();
+        if trimmed.is_empty() || is_shell_comment_line(trimmed) {
+            continue;
+        }
+        let tokens = trimmed.split_whitespace().collect::<Vec<_>>();
+        if tokens.is_empty() {
+            continue;
+        }
+        let first = tokens[0];
+        if matches!(first, "if" | "while" | "until") {
+            if let Some(second) = tokens.get(1).copied()
+                && !is_shell_control_keyword(second)
+                && !is_simple_assignment_token(second)
+            {
+                out.push(classify_simple_command_from_words(&[second.to_string()]));
+            }
+            continue;
+        }
+        if is_shell_control_keyword(first) || is_simple_assignment_token(first) {
+            continue;
+        }
+        let words = tokens.iter().map(|t| (*t).to_string()).collect::<Vec<_>>();
+        out.push(classify_simple_command_from_words(&words));
+    }
+    out
+}
+
+fn split_shell_segments(line: &str) -> Vec<String> {
+    let trimmed = line.trim();
+    if trimmed.is_empty() {
+        return Vec::new();
+    }
+
+    let mut segments = Vec::new();
+    let mut current = String::new();
+    let chars = trimmed.chars().collect::<Vec<_>>();
+    let mut i = 0usize;
+    let mut single_quote = false;
+    let mut double_quote = false;
+    let mut backtick_quote = false;
+
+    while i < chars.len() {
+        let c = chars[i];
+        if c == '\'' && !double_quote && !backtick_quote {
+            single_quote = !single_quote;
+            current.push(c);
+            i += 1;
+            continue;
+        }
+        if c == '"' && !single_quote && !backtick_quote {
+            double_quote = !double_quote;
+            current.push(c);
+            i += 1;
+            continue;
+        }
+        if c == '`' && !single_quote && !double_quote {
+            backtick_quote = !backtick_quote;
+            current.push(c);
+            i += 1;
+            continue;
+        }
+        if c == '\\' && i + 1 < chars.len() {
+            current.push(c);
+            current.push(chars[i + 1]);
+            i += 2;
+            continue;
+        }
+        if !single_quote && !double_quote && !backtick_quote {
+            if c == '|' && chars.get(i + 1) == Some(&'|') {
+                segments.push(current.trim().to_string());
+                current.clear();
+                i += 2;
+                continue;
+            }
+            if c == '&' && chars.get(i + 1) == Some(&'&') {
+                segments.push(current.trim().to_string());
+                current.clear();
+                i += 2;
+                continue;
+            }
+            if c == ';' || c == '|' {
+                segments.push(current.trim().to_string());
+                current.clear();
+                i += 1;
+                continue;
+            }
+        }
+        current.push(c);
+        i += 1;
+    }
+    if !current.trim().is_empty() {
+        segments.push(current.trim().to_string());
+    }
+    segments
+}
+
+fn is_shell_control_keyword(token: &str) -> bool {
+    matches!(
+        token,
+        "if" | "then" | "else" | "elif" | "fi" | "for" | "while" | "until" | "do" | "done"
+    )
+}
+
+fn is_simple_assignment_token(token: &str) -> bool {
+    let Some((name, _value)) = token.split_once('=') else {
+        return false;
+    };
+    !name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+fn has_trailing_unescaped_backslash(line: &str) -> bool {
+    let trimmed = line.trim_end();
+    if !trimmed.ends_with('\\') {
+        return false;
+    }
+    let count = trimmed.chars().rev().take_while(|c| *c == '\\').count();
+    count % 2 == 1
 }
 
 fn leading_spaces(line: &str) -> usize {
@@ -352,8 +535,7 @@ fn format_step_annotation(step: &StepPlan) -> String {
 }
 
 fn format_step_kinds(step: &StepPlan) -> String {
-    step
-        .commands
+    step.commands
         .iter()
         .map(format_command_kind)
         .collect::<Vec<_>>()
@@ -373,8 +555,11 @@ fn format_kind_label(kind: &CmdKind, special: Option<&SpecialActionKind>) -> Str
 }
 
 pub fn classify_step_kind(step: &ActionsAst) -> Option<CmdKind> {
+    let catalog = load_action_catalog().ok();
     match step {
-        ActionsAst::UsesStep { uses, .. } => Some(classify_uses_kind(uses)),
+        ActionsAst::UsesStep { uses, .. } => {
+            Some(classify_uses_from_catalog(uses, catalog.as_ref()).0)
+        }
         _ => None,
     }
 }
@@ -382,20 +567,21 @@ pub fn classify_step_kind(step: &ActionsAst) -> Option<CmdKind> {
 fn collect_steps(
     id: AstId,
     arena: &AstArena,
+    catalog: Option<&ActionCatalog>,
     out: &mut Vec<StepPlan>,
     unknown_uses: &mut Vec<String>,
 ) {
     match arena.get_actions(&id) {
         ActionsAst::Workflow { jobs, .. } => {
             for job in jobs {
-                collect_steps(*job, arena, out, unknown_uses);
+                collect_steps(*job, arena, catalog, out, unknown_uses);
             }
         }
         ActionsAst::Job { steps, .. } => {
             for step_id in steps {
-                out.push(analyze_step(*step_id, arena));
+                out.push(analyze_step_with_catalog(*step_id, arena, catalog));
                 if let ActionsAst::UsesStep { uses, .. } = arena.get_actions(step_id)
-                    && normalize_uses(uses).is_none()
+                    && is_unknown_uses(uses, catalog)
                 {
                     unknown_uses.push(uses.clone());
                 }
@@ -427,80 +613,63 @@ fn read_simple_command_words(cmd_id: AstId, arena: &AstArena) -> Option<Vec<Stri
 }
 
 fn classify_simple_command_from_words(words: &[String]) -> CmdKind {
-    let cmd = words[0].as_str();
-    match cmd {
-        "apt" | "apt-get" | "brew" | "asdf" | "pip" | "pip3" => CmdKind::EnvSetup,
-        "pytest" => CmdKind::Test,
-        "npm" => classify_npm(words),
-        "cargo" => classify_cargo(words),
-        "gradle" => classify_gradle(words),
-        "go" => classify_go(words),
+    match classify_simple_command(words) {
+        Ok(kind) => map_rule_cmd_kind(kind),
+        Err(_) => CmdKind::Other,
+    }
+}
+
+fn map_rule_cmd_kind(kind: RuleCmdKind) -> CmdKind {
+    match kind {
+        RuleCmdKind::EnvSetup => CmdKind::EnvSetup,
+        RuleCmdKind::TestSetup => CmdKind::TestSetup,
+        RuleCmdKind::Test => CmdKind::Test,
+        RuleCmdKind::Other => CmdKind::Other,
+    }
+}
+
+fn map_cmd_kind_label(raw: Option<&str>) -> CmdKind {
+    match raw {
+        Some("EnvSetup") => CmdKind::EnvSetup,
+        Some("TestSetup") => CmdKind::TestSetup,
+        Some("Test") => CmdKind::Test,
         _ => CmdKind::Other,
     }
 }
 
-fn classify_npm(words: &[String]) -> CmdKind {
-    match words.get(1).map(String::as_str) {
-        Some("test") => CmdKind::Test,
-        Some("run") if words.get(2).map(String::as_str) == Some("build") => CmdKind::TestSetup,
-        Some("install") | Some("ci") => CmdKind::EnvSetup,
-        _ => CmdKind::Other,
-    }
-}
-
-fn classify_cargo(words: &[String]) -> CmdKind {
-    match words.get(1).map(String::as_str) {
-        Some("test") => CmdKind::Test,
-        Some("build") => CmdKind::TestSetup,
-        Some("install") => CmdKind::EnvSetup,
-        _ => CmdKind::Other,
-    }
-}
-
-fn classify_gradle(words: &[String]) -> CmdKind {
-    match words.get(1).map(String::as_str) {
-        Some("test") => CmdKind::Test,
-        Some("assemble") => CmdKind::TestSetup,
-        _ => CmdKind::Other,
-    }
-}
-
-fn classify_go(words: &[String]) -> CmdKind {
-    match words.get(1).map(String::as_str) {
-        Some("test") => CmdKind::Test,
-        _ => CmdKind::Other,
-    }
-}
-
-fn classify_uses_kind(uses: &str) -> CmdKind {
-    if let Some(special) = classify_uses_special_action(uses) {
-        return match special {
-            SpecialActionKind::Checkout => CmdKind::EnvSetup,
-            SpecialActionKind::ArtifactUpload | SpecialActionKind::ArtifactDownload => CmdKind::Other,
-        };
-    }
-    let Some(owner_repo) = normalize_uses(uses) else {
-        return CmdKind::Other;
-    };
-    match owner_repo.as_str() {
-        "actions/checkout"
-        | "actions/setup-node"
-        | "actions/setup-python"
-        | "actions/setup-java"
-        | "actions-rs/toolchain" => CmdKind::EnvSetup,
-        "actions/upload-artifact" | "actions/download-artifact" => CmdKind::Other,
-        _ => CmdKind::Other,
-    }
-}
-
-fn classify_uses_special_action(uses: &str) -> Option<SpecialActionKind> {
-    let owner_repo = normalize_uses(uses)?;
-    match owner_repo.as_str() {
-        "actions/checkout" => Some(SpecialActionKind::Checkout),
-        "actions/upload-artifact" => Some(SpecialActionKind::ArtifactUpload),
-        "actions/download-artifact" => Some(SpecialActionKind::ArtifactDownload),
+fn map_special_action_label(raw: Option<&str>) -> Option<SpecialActionKind> {
+    match raw {
+        Some("Checkout") => Some(SpecialActionKind::Checkout),
+        Some("ArtifactUpload") => Some(SpecialActionKind::ArtifactUpload),
+        Some("ArtifactDownload") => Some(SpecialActionKind::ArtifactDownload),
         _ => None,
     }
+}
+
+fn classify_uses_from_catalog(
+    uses: &str,
+    catalog: Option<&ActionCatalog>,
+) -> (CmdKind, Option<SpecialActionKind>) {
+    let Some(catalog) = catalog else {
+        return (CmdKind::Other, None);
+    };
+    let Some(entry) = action_entry_for_uses(uses, catalog) else {
+        return (CmdKind::Other, None);
+    };
+    (
+        map_cmd_kind_label(entry.cmd_kind.as_deref()),
+        map_special_action_label(entry.special_action.as_deref()),
+    )
+}
+
+fn is_unknown_uses(uses: &str, catalog: Option<&ActionCatalog>) -> bool {
+    let Some(catalog) = catalog else {
+        return true;
+    };
+    if normalize_uses(uses).is_none() {
+        return true;
+    }
+    action_entry_for_uses(uses, catalog).is_none()
 }
 
 fn collect_simple_commands(id: AstId, arena: &AstArena, out: &mut Vec<AstId>) {
@@ -562,14 +731,17 @@ fn collect_simple_commands(id: AstId, arena: &AstArena, out: &mut Vec<AstId>) {
 #[cfg(test)]
 mod tests {
     use super::{
-        CmdKind, PlanOptions, analyze_actions, analyze_simple_command, build_execution_plan,
-        format_cmd_kind_lines, annotate_yaml_with_cmd_kind,
+        CmdKind, PlanOptions, analyze_actions, analyze_simple_command, annotate_yaml_with_cmd_kind,
+        build_execution_plan, format_cmd_kind_lines,
     };
     use crate::actions_parser::actions_ast::{ActionsAst, RunsOn};
     use crate::actions_parser::arena::AstArena;
     use crate::actions_parser::sh_parser::sh_ast::{ListItem, SeparatorKind, ShAstNode};
 
-    fn alloc_simple_command(arena: &mut AstArena, words: &[&str]) -> crate::actions_parser::arena::AstId {
+    fn alloc_simple_command(
+        arena: &mut AstArena,
+        words: &[&str],
+    ) -> crate::actions_parser::arena::AstId {
         let argv = words
             .iter()
             .map(|w| arena.alloc_sh(ShAstNode::Word((*w).to_string())))
@@ -681,7 +853,10 @@ mod tests {
 
         assert_eq!(uses_known, Some(CmdKind::EnvSetup));
         assert_eq!(uses_unknown, Some(CmdKind::Other));
-        assert_eq!(analysis.unknown_uses, vec!["./.github/actions/setup".to_string()]);
+        assert_eq!(
+            analysis.unknown_uses,
+            vec!["./.github/actions/setup".to_string()]
+        );
     }
 
     #[test]
@@ -816,12 +991,8 @@ jobs:
 
         assert!(annotated.contains("name: CI\n"));
         assert!(annotated.contains("jobs:\n"));
-        assert!(annotated.contains(
-            "- uses: actions/checkout@v4 --- EnvSetup (Checkout)\n"
-        ));
-        assert!(annotated.contains(
-            "run: cargo build && cargo test --- TestSetup && Test\n"
-        ));
+        assert!(annotated.contains("- uses: actions/checkout@v4 --- EnvSetup (Checkout)\n"));
+        assert!(annotated.contains("run: cargo build && cargo test --- TestSetup && Test\n"));
     }
 
     #[test]
@@ -863,6 +1034,152 @@ jobs:
         assert!(annotated.contains("      - run: |\n"));
         assert!(annotated.contains("          cargo build --- TestSetup\n"));
         assert!(annotated.contains("          cargo test --- Test\n"));
+    }
+
+    #[test]
+    fn annotate_yaml_skips_comment_lines_in_multiline_run() {
+        let analysis = super::AnalysisResult {
+            steps: vec![super::StepPlan {
+                step_id: crate::actions_parser::arena::AstId(2),
+                commands: vec![super::CommandPlan {
+                    ast_id: crate::actions_parser::arena::AstId(12),
+                    attr: super::Attr {
+                        kind: Some(CmdKind::Test),
+                        tools: vec!["cargo test".to_string()],
+                        ..super::Attr::default()
+                    },
+                }],
+            }],
+            unknown_uses: vec![],
+            errors: vec![],
+        };
+        let yaml = r#"jobs:
+  test:
+    steps:
+      - name: Run tests
+        run: |
+          # 単体テスト
+          cargo test
+"#;
+
+        let annotated = annotate_yaml_with_cmd_kind(yaml, &analysis);
+        assert!(annotated.contains("          # 単体テスト\n"));
+        assert!(annotated.contains("          cargo test --- Test\n"));
+    }
+
+    #[test]
+    fn annotate_yaml_skips_control_and_assignment_lines() {
+        let analysis = super::AnalysisResult {
+            steps: vec![super::StepPlan {
+                step_id: crate::actions_parser::arena::AstId(2),
+                commands: vec![
+                    super::CommandPlan {
+                        ast_id: crate::actions_parser::arena::AstId(11),
+                        attr: super::Attr {
+                            kind: Some(CmdKind::Other),
+                            tools: vec!["[".to_string()],
+                            ..super::Attr::default()
+                        },
+                    },
+                    super::CommandPlan {
+                        ast_id: crate::actions_parser::arena::AstId(12),
+                        attr: super::Attr {
+                            kind: Some(CmdKind::Test),
+                            tools: vec!["cargo test".to_string()],
+                            ..super::Attr::default()
+                        },
+                    },
+                ],
+            }],
+            unknown_uses: vec![],
+            errors: vec![],
+        };
+        let yaml = r#"jobs:
+  test:
+    steps:
+      - run: |
+          failed=false
+          if [ "$failed" = true ]; then
+            cargo test
+          fi
+"#;
+        let annotated = annotate_yaml_with_cmd_kind(yaml, &analysis);
+        assert!(annotated.contains("          failed=false\n"));
+        assert!(annotated.contains("          if [ \"$failed\" = true ]; then --- Other\n"));
+        assert!(annotated.contains("            cargo test --- Test\n"));
+        assert!(annotated.contains("          fi\n"));
+    }
+
+    #[test]
+    fn annotate_yaml_multiline_keeps_other_for_simple_commands() {
+        let analysis = super::AnalysisResult {
+            steps: vec![super::StepPlan {
+                step_id: crate::actions_parser::arena::AstId(2),
+                commands: vec![
+                    super::CommandPlan {
+                        ast_id: crate::actions_parser::arena::AstId(11),
+                        attr: super::Attr {
+                            kind: Some(CmdKind::Other),
+                            tools: vec!["set -x".to_string()],
+                            ..super::Attr::default()
+                        },
+                    },
+                    super::CommandPlan {
+                        ast_id: crate::actions_parser::arena::AstId(12),
+                        attr: super::Attr {
+                            kind: Some(CmdKind::Test),
+                            tools: vec!["cargo test".to_string()],
+                            ..super::Attr::default()
+                        },
+                    },
+                ],
+            }],
+            unknown_uses: vec![],
+            errors: vec![],
+        };
+        let yaml = r#"jobs:
+  test:
+    steps:
+      - run: |
+          set -x
+          cargo test
+"#;
+        let annotated = annotate_yaml_with_cmd_kind(yaml, &analysis);
+        assert!(annotated.contains("          set -x --- Other\n"));
+        assert!(annotated.contains("          cargo test --- Test\n"));
+    }
+
+    #[test]
+    fn annotate_yaml_multiline_line_continuation_is_single_command() {
+        let analysis = super::AnalysisResult {
+            steps: vec![super::StepPlan {
+                step_id: crate::actions_parser::arena::AstId(2),
+                commands: vec![super::CommandPlan {
+                    ast_id: crate::actions_parser::arena::AstId(11),
+                    attr: super::Attr {
+                        kind: Some(CmdKind::Other),
+                        tools: vec!["sudo apt-get install bison zsh".to_string()],
+                        ..super::Attr::default()
+                    },
+                }],
+            }],
+            unknown_uses: vec![],
+            errors: vec![],
+        };
+        let yaml = r#"jobs:
+  test:
+    steps:
+      - run: |
+          sudo apt-get install \
+            bison \
+            zsh
+"#;
+        let annotated = annotate_yaml_with_cmd_kind(yaml, &analysis);
+        assert!(annotated.contains("          sudo apt-get install \\ --- Other\n"));
+        assert!(annotated.contains("            bison \\\n"));
+        assert!(annotated.contains("            zsh\n"));
+        assert!(!annotated.contains("            bison \\ --- "));
+        assert!(!annotated.contains("            zsh --- "));
     }
 
     #[test]
