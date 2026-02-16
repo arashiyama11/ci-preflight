@@ -665,11 +665,11 @@ impl ShParser {
         let mut argv: Vec<AstId> = vec![];
         let mut redirs: Vec<AstId> = vec![];
         let mut heredoc_op: Option<String> = None;
-        let mut heredoc_delim: Option<&str> = None;
+        let mut heredoc_delim: Option<String> = None;
         let mut heredoc_place: Option<usize> = None;
         let mut pending_io_number: Option<String> = None;
         loop {
-            let tok = match self.input.get(self.pos) {
+            let tok = match self.input.get(self.pos).cloned() {
                 Some(t) => t,
                 None => break,
             };
@@ -678,11 +678,21 @@ impl ShParser {
                 break;
             }
 
-            let s = tok.text(&self.src);
+            let s = tok.text(&self.src).to_string();
 
             match &tok.kind {
                 ShTokenKind::Word(_) => {
-                    if is_digits(s) {
+                    if s == "$"
+                        && self
+                            .next_token()
+                            .is_some_and(|next| next.kind == ShTokenKind::LParen)
+                    {
+                        self.pos += 1;
+                        let sub = self.parse_command_substitution()?;
+                        argv.push(sub);
+                        continue;
+                    }
+                    if is_digits(&s) {
                         if let Some(next) = self.next_token() {
                             if next.kind == ShTokenKind::Redir
                                 && tok.span.index + tok.span.len == next.span.index
@@ -693,13 +703,32 @@ impl ShParser {
                             }
                         }
                     }
-                    if s.contains('=') {
-                        let node = ShAstNode::Assignment(s.to_string());
+                    if argv.is_empty() && is_assignment_word(&s) {
+                        let assignment = if s.ends_with('$')
+                            && self
+                                .next_token()
+                                .is_some_and(|next| next.kind == ShTokenKind::LParen)
+                        {
+                            s[..s.len() - 1].to_string()
+                        } else {
+                            s.to_string()
+                        };
+                        let node = ShAstNode::Assignment(assignment);
                         assignments.push(self.arena.alloc_sh(node));
-                    } else if end_words.contains(&s) {
+                        if s.ends_with('$')
+                            && self
+                                .next_token()
+                                .is_some_and(|next| next.kind == ShTokenKind::LParen)
+                        {
+                            self.pos += 1;
+                            let sub = self.parse_command_substitution()?;
+                            argv.push(sub);
+                            continue;
+                        }
+                    } else if end_words.contains(&s.as_str()) {
                         break;
                     } else {
-                        let node = ShAstNode::Word(s.to_string());
+                        let node = ShAstNode::Word(s);
                         argv.push(self.arena.alloc_sh(node));
                     }
                 }
@@ -711,7 +740,7 @@ impl ShParser {
                     }
                     if s == "<<" || s == "<<-" {
                         heredoc_op = Some(op);
-                        heredoc_delim = Some(self.input[self.pos + 1].text(&self.src));
+                        heredoc_delim = Some(self.input[self.pos + 1].text(&self.src).to_string());
                         heredoc_place = Some(redirs.len());
                         self.pos += 1;
                     } else {
@@ -743,7 +772,7 @@ impl ShParser {
                 | ShTokenKind::RParen
                 | ShTokenKind::LBrace
                 | ShTokenKind::RBrace => {
-                    let node = ShAstNode::Word(s.to_string());
+                    let node = ShAstNode::Word(s);
                     argv.push(self.arena.alloc_sh(node));
                 }
 
@@ -772,7 +801,7 @@ impl ShParser {
             loop {
                 i += 1;
                 match self.input.get(i) {
-                    Some(t) if t.text(&self.src) == delim => break,
+                    Some(t) if t.text(&self.src) == delim.as_str() => break,
                     None => {
                         self.record_error(ParseError::UnexpectedEof);
                         return Ok(self.recover_unknown());
@@ -797,6 +826,28 @@ impl ShParser {
         };
 
         Ok(self.arena.alloc_sh(node))
+    }
+
+    fn parse_command_substitution(&mut self) -> Result<AstId, ParseError> {
+        if let Err(err) = self.expect_current_token(ShTokenKind::LParen) {
+            self.record_error(err);
+            return Ok(self.recover_unknown());
+        }
+        self.pos += 1;
+        let body = match self.parse_list(&[], &[ShTokenKind::RParen]) {
+            Ok(body) => body,
+            Err(err) => {
+                self.record_error(err);
+                self.recover_unknown()
+            }
+        };
+        if let Err(err) = self.expect_current_token(ShTokenKind::RParen) {
+            self.record_error(err);
+            self.recover_to_stmt_boundary();
+        } else {
+            self.pos += 1;
+        }
+        Ok(self.arena.alloc_sh(ShAstNode::CommandSubstitution { body }))
     }
 
     fn parse_subshell(&mut self) -> Result<AstId, ParseError> {
@@ -931,6 +982,10 @@ fn fmt_node(id: AstId, arena: &AstArena, indent: usize, out: &mut String) {
             push_line(out, indent, "Subshell");
             fmt_node(*body, arena, indent + 1, out);
         }
+        ShAstNode::CommandSubstitution { body } => {
+            push_line(out, indent, "CommandSubstitution");
+            fmt_node(*body, arena, indent + 1, out);
+        }
         ShAstNode::Group { body } => {
             push_line(out, indent, "Group");
             fmt_node(*body, arena, indent + 1, out);
@@ -974,6 +1029,18 @@ fn push_line(out: &mut String, indent: usize, text: &str) {
 
 fn is_digits(s: &str) -> bool {
     !s.is_empty() && s.chars().all(|c| c.is_ascii_digit())
+}
+
+fn is_assignment_word(s: &str) -> bool {
+    let Some((name, _)) = s.split_once('=') else {
+        return false;
+    };
+    let mut chars = name.chars();
+    match chars.next() {
+        Some(c) if c.is_ascii_alphabetic() || c == '_' => {}
+        _ => return false,
+    }
+    chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
 #[cfg(test)]
@@ -1391,5 +1458,16 @@ fi
   | jq -r '.tag_name')"#;
         let tree = parse_and_format(program);
         assert!(!tree.contains("Unknown"));
+        assert!(tree.contains("CommandSubstitution"));
+    }
+
+    #[test]
+    fn jq_filter_argument_is_not_parsed_as_assignment_or_command() {
+        let program = r#"DOWNLOAD_URL=$(curl -s "https://api.github.com/repos/x/y/releases/latest" \
+  | jq -r ".assets[] | select(.name == \"$APK_NAME\") | .browser_download_url")"#;
+        let tree = parse_and_format(program);
+        assert!(!tree.contains("Unknown"));
+        assert!(!tree.contains("Assignment \"\".assets[]"));
+        assert!(!tree.contains("Word \".browser_download_url\""));
     }
 }

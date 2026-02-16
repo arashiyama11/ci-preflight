@@ -153,7 +153,10 @@ fn get_optional_string(
 }
 
 fn validate_cmd_kind(action: &str, value: &str) -> Result<(), ActionCatalogError> {
-    if matches!(value, "EnvSetup" | "TestSetup" | "Test" | "Other") {
+    if matches!(
+        value,
+        "EnvSetup" | "TestSetup" | "Test" | "Assert" | "Other"
+    ) {
         return Ok(());
     }
     Err(ActionCatalogError::InvalidCmdKind(

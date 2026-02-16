@@ -498,6 +498,10 @@ impl ActionsParser {
                 self.push_line(indent, "Subshell", out);
                 self.format_sh_impl(body, indent + 1, out);
             }
+            crate::actions_parser::sh_parser::sh_ast::ShAstNode::CommandSubstitution { body } => {
+                self.push_line(indent, "CommandSubstitution", out);
+                self.format_sh_impl(body, indent + 1, out);
+            }
             crate::actions_parser::sh_parser::sh_ast::ShAstNode::Group { body } => {
                 self.push_line(indent, "Group", out);
                 self.format_sh_impl(body, indent + 1, out);

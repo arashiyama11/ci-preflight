@@ -68,6 +68,9 @@ pub enum ShAstNode {
     Subshell {
         body: AstId,
     },
+    CommandSubstitution {
+        body: AstId,
+    },
     Group {
         body: AstId,
     },

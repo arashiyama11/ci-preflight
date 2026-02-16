@@ -18,6 +18,7 @@ pub enum CmdKind {
     EnvSetup,
     TestSetup,
     Test,
+    Assert,
     Other,
 }
 
@@ -27,6 +28,7 @@ impl CmdKind {
             CmdKind::EnvSetup => "EnvSetup",
             CmdKind::TestSetup => "TestSetup",
             CmdKind::Test => "Test",
+            CmdKind::Assert => "Assert",
             CmdKind::Other => "Other",
         }
     }
@@ -617,6 +619,12 @@ fn classify_line_kinds_by_words(line: &str) -> Vec<CmdKind> {
             }
             continue;
         }
+        if is_simple_assignment_token(first) {
+            if let Some(cmd) = command_in_assignment_substitution(first) {
+                out.push(classify_simple_command_from_words(&[cmd]));
+            }
+            continue;
+        }
         if is_shell_control_keyword(first) || is_simple_assignment_token(first) {
             continue;
         }
@@ -707,6 +715,16 @@ fn is_simple_assignment_token(token: &str) -> bool {
         return false;
     };
     !name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+fn command_in_assignment_substitution(token: &str) -> Option<String> {
+    let (_name, value) = token.split_once('=')?;
+    let body = value.strip_prefix("$(")?;
+    let cmd = body
+        .chars()
+        .take_while(|c| !c.is_whitespace() && *c != ')' && *c != '"' && *c != '\'')
+        .collect::<String>();
+    if cmd.is_empty() { None } else { Some(cmd) }
 }
 
 fn has_trailing_unescaped_backslash(line: &str) -> bool {
@@ -854,6 +872,7 @@ fn map_rule_cmd_kind(kind: RuleCmdKind) -> CmdKind {
         RuleCmdKind::EnvSetup => CmdKind::EnvSetup,
         RuleCmdKind::TestSetup => CmdKind::TestSetup,
         RuleCmdKind::Test => CmdKind::Test,
+        RuleCmdKind::Assert => CmdKind::Assert,
         RuleCmdKind::Other => CmdKind::Other,
     }
 }
@@ -863,6 +882,7 @@ fn map_cmd_kind_label(raw: Option<&str>) -> CmdKind {
         Some("EnvSetup") => CmdKind::EnvSetup,
         Some("TestSetup") => CmdKind::TestSetup,
         Some("Test") => CmdKind::Test,
+        Some("Assert") => CmdKind::Assert,
         _ => CmdKind::Other,
     }
 }
@@ -948,7 +968,9 @@ fn collect_simple_commands(id: AstId, arena: &AstArena, out: &mut Vec<AstId>) {
             collect_simple_commands(*name, arena, out);
             collect_simple_commands(*body, arena, out);
         }
-        ShAstNode::Subshell { body } | ShAstNode::Group { body } => {
+        ShAstNode::Subshell { body }
+        | ShAstNode::CommandSubstitution { body }
+        | ShAstNode::Group { body } => {
             collect_simple_commands(*body, arena, out);
         }
         ShAstNode::Word(_)
@@ -992,6 +1014,7 @@ mod tests {
         let cargo_test = alloc_simple_command(&mut arena, &["cargo", "test"]);
         let cargo_build = alloc_simple_command(&mut arena, &["cargo", "build"]);
         let npm_install = alloc_simple_command(&mut arena, &["npm", "install"]);
+        let bracket_test = alloc_simple_command(&mut arena, &["[", "-n", "$X", "]"]);
         let echo = alloc_simple_command(&mut arena, &["echo", "ok"]);
 
         assert_eq!(
@@ -1005,6 +1028,10 @@ mod tests {
         assert_eq!(
             analyze_simple_command(npm_install, &arena).kind,
             Some(CmdKind::EnvSetup)
+        );
+        assert_eq!(
+            analyze_simple_command(bracket_test, &arena).kind,
+            Some(CmdKind::Assert)
         );
         assert_eq!(
             analyze_simple_command(echo, &arena).kind,
@@ -1501,6 +1528,36 @@ jobs:
         assert!(annotated.contains("            zsh\n"));
         assert!(!annotated.contains("            bison \\ --- "));
         assert!(!annotated.contains("            zsh --- "));
+    }
+
+    #[test]
+    fn annotate_yaml_multiline_assignment_substitution_gets_annotation() {
+        let analysis = super::AnalysisResult {
+            steps: vec![super::StepPlan {
+                step_id: crate::actions_parser::arena::AstId(2),
+                commands: vec![super::CommandPlan {
+                    ast_id: crate::actions_parser::arena::AstId(11),
+                    attr: super::Attr {
+                        kind: Some(CmdKind::Other),
+                        tools: vec!["curl -s".to_string()],
+                        ..super::Attr::default()
+                    },
+                }],
+            }],
+            unknown_uses: vec![],
+            errors: vec![],
+        };
+        let yaml = r#"jobs:
+  test:
+    steps:
+      - run: |
+          LATEST_RELEASE=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
+            "https://api.github.com/repos/${{ github.repository }}/releases/latest" \
+            | jq -r '.tag_name')
+"#;
+        let annotated = annotate_yaml_with_cmd_kind(yaml, &analysis);
+        assert!(annotated.contains("          LATEST_RELEASE=$(curl -s -H "));
+        assert!(annotated.contains("--- Other\n"));
     }
 
     #[test]

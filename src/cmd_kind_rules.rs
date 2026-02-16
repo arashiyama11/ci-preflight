@@ -11,6 +11,7 @@ pub enum RuleCmdKind {
     EnvSetup,
     TestSetup,
     Test,
+    Assert,
     Other,
 }
 
@@ -247,6 +248,7 @@ fn parse_kind(raw: &str) -> Result<RuleCmdKind, CmdKindRulesError> {
         "EnvSetup" => Ok(RuleCmdKind::EnvSetup),
         "TestSetup" => Ok(RuleCmdKind::TestSetup),
         "Test" => Ok(RuleCmdKind::Test),
+        "Assert" => Ok(RuleCmdKind::Assert),
         "Other" => Ok(RuleCmdKind::Other),
         _ => Err(CmdKindRulesError::InvalidCmdKind(raw.to_string())),
     }
@@ -275,6 +277,16 @@ mod tests {
             classify_simple_command(&["gradle".to_string(), "testDebugUnitTest".to_string(),])
                 .unwrap(),
             RuleCmdKind::Test
+        );
+        assert_eq!(
+            classify_simple_command(&[
+                "[".to_string(),
+                "-n".to_string(),
+                "$X".to_string(),
+                "]".to_string()
+            ])
+            .unwrap(),
+            RuleCmdKind::Assert
         );
     }
 }

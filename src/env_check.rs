@@ -173,18 +173,31 @@ fn collect_from_sh(
             }
         }
         ShAstNode::SimpleCommand { argv, .. } => {
-            let Some(first) = argv.first() else {
-                return;
-            };
-            match arena.get_sh(*first) {
-                ShAstNode::Word(word) => {
-                    let cmd = word.trim();
-                    if !cmd.is_empty() && !is_shell_builtin(cmd) {
-                        required.insert(cmd.to_string());
+            if let Some(first) = argv.first() {
+                match arena.get_sh(*first) {
+                    ShAstNode::Word(word) => {
+                        let cmd = word.trim();
+                        if !cmd.is_empty() && !is_shell_builtin(cmd) {
+                            required.insert(cmd.to_string());
+                        }
+                    }
+                    _ => {
+                        let has_substitution = argv.iter().any(|id| {
+                            matches!(arena.get_sh(*id), ShAstNode::CommandSubstitution { .. })
+                        });
+                        if !has_substitution {
+                            unknown_commands.insert("<non-word-command>".to_string());
+                        }
                     }
                 }
-                _ => {
-                    unknown_commands.insert("<non-word-command>".to_string());
+            }
+
+            for arg in argv {
+                if matches!(
+                    arena.get_sh(*arg),
+                    ShAstNode::CommandSubstitution { .. } | ShAstNode::Subshell { .. }
+                ) {
+                    collect_from_sh(*arg, arena, required, unknown_commands);
                 }
             }
         }
@@ -214,7 +227,9 @@ fn collect_from_sh(
             collect_from_sh(*name, arena, required, unknown_commands);
             collect_from_sh(*body, arena, required, unknown_commands);
         }
-        ShAstNode::Subshell { body } | ShAstNode::Group { body } => {
+        ShAstNode::Subshell { body }
+        | ShAstNode::CommandSubstitution { body }
+        | ShAstNode::Group { body } => {
             collect_from_sh(*body, arena, required, unknown_commands);
         }
         ShAstNode::Word(_)
@@ -227,7 +242,7 @@ fn collect_from_sh(
 fn is_shell_builtin(cmd: &str) -> bool {
     matches!(
         cmd,
-        "cd" | "echo" | "export" | "test" | ":" | "true" | "false"
+        "cd" | "echo" | "export" | "test" | ":" | "true" | "false" | "exit" | "set" | "[["
     )
 }
 
@@ -300,6 +315,8 @@ mod tests {
     fn builtins_are_filtered() {
         assert!(is_shell_builtin("echo"));
         assert!(is_shell_builtin("cd"));
+        assert!(is_shell_builtin("set"));
+        assert!(is_shell_builtin("[["));
         assert!(!is_shell_builtin("cargo"));
     }
 
@@ -430,5 +447,80 @@ jobs:
         let report = check_workflow_tools(root, &arena, &catalog);
 
         assert!(report.required_tools.contains(&"cargo".to_string()));
+    }
+
+    #[test]
+    fn collects_tools_from_command_substitution() {
+        let yaml = r#"
+name: CI
+on: push
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          LATEST_RELEASE=$(curl -s https://example.com | jq -r '.tag_name')
+"#;
+
+        let mut source_map = actions_parser::source_map::SourceMap::new();
+        let source_id = source_map.add_yaml(
+            std::path::PathBuf::from("wf.yml"),
+            "workflow".to_string(),
+            yaml.to_string(),
+        );
+        let (root, arena, errs) =
+            actions_parser::parse_actions_yaml(&mut source_map, &source_id).unwrap();
+        assert!(errs.is_empty());
+
+        let catalog = ActionCatalog::new();
+        let report = check_workflow_tools(root, &arena, &catalog);
+
+        assert!(report.required_tools.contains(&"curl".to_string()));
+        assert!(report.required_tools.contains(&"jq".to_string()));
+        assert!(
+            !report
+                .unknown_commands
+                .contains(&"<non-word-command>".to_string())
+        );
+    }
+
+    #[test]
+    fn does_not_collect_jq_filter_fragments_as_tools() {
+        let yaml = r#"
+name: CI
+on: push
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          DOWNLOAD_URL=$(curl -s "https://api.github.com/repos/x/y/releases/latest" \
+            | jq -r ".assets[] | select(.name == \"$APK_NAME\") | .browser_download_url")
+          ASSET_ID=$(curl -s "https://api.github.com/repos/x/y/releases/latest" \
+            | jq -r ".assets[] | select(.name == \"$APK_NAME\") | .id")
+"#;
+
+        let mut source_map = actions_parser::source_map::SourceMap::new();
+        let source_id = source_map.add_yaml(
+            std::path::PathBuf::from("wf.yml"),
+            "workflow".to_string(),
+            yaml.to_string(),
+        );
+        let (root, arena, errs) =
+            actions_parser::parse_actions_yaml(&mut source_map, &source_id).unwrap();
+        assert!(errs.is_empty());
+
+        let catalog = ActionCatalog::new();
+        let report = check_workflow_tools(root, &arena, &catalog);
+
+        assert!(report.required_tools.contains(&"curl".to_string()));
+        assert!(report.required_tools.contains(&"jq".to_string()));
+        assert!(!report.required_tools.iter().any(|t| t.contains(".id")));
+        assert!(
+            !report
+                .required_tools
+                .iter()
+                .any(|t| t.contains(".browser_download_url"))
+        );
     }
 }

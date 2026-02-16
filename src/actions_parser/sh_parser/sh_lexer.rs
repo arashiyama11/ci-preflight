@@ -238,15 +238,23 @@ impl Lexer {
                 let quote = ch;
                 let start = self.position;
                 self.read_char();
-
-                while self.peek_char().is_some_and(|c| *c != quote) {
-                    self.read_char();
-                    if self.peek_char().is_some_and(|c| *c == '\\') {
-                        self.read_char();
+                while self.position < self.input.len() && self.input[self.position] != quote {
+                    if quote != '\''
+                        && self.input[self.position] == '\\'
+                        && self.position + 1 < self.input.len()
+                    {
+                        self.position += 2;
+                        continue;
                     }
+                    self.read_char();
                 }
-
-                self.read_char();
+                if self.position >= self.input.len() {
+                    return Err(LexerError::UnexpectedEof(Span::new(
+                        start,
+                        self.source_id,
+                        self.position.saturating_sub(start),
+                    )));
+                }
 
                 ShToken::new(
                     ShTokenKind::Word(WordKind::Word),
@@ -716,5 +724,30 @@ echo done
             }
             i += 1;
         }
+    }
+
+    #[test]
+    fn escaped_quote_inside_double_quoted_word_stays_single_token() {
+        let program = r#"jq -r ".assets[] | select(.name == \"$APK_NAME\") | .id""#;
+        let tokens: Vec<_> = Lexer::new(program.chars().collect(), SourceId(0))
+            .map(|it| it.unwrap())
+            .collect();
+        let words: Vec<_> = tokens
+            .iter()
+            .filter(|t| matches!(t.kind, ShTokenKind::Word(_)))
+            .map(|t| t.text(program).to_string())
+            .collect();
+        assert_eq!(
+            words,
+            vec![
+                "jq",
+                "-r",
+                r#"".assets[] | select(.name == \"$APK_NAME\") | .id""#
+            ]
+        );
+        assert!(
+            !tokens.iter().any(|t| t.kind == ShTokenKind::Pipe),
+            "escaped quote in double quotes must not terminate token early"
+        );
     }
 }
