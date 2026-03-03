@@ -19,4 +19,7 @@ jobs:
           override: true
 
       - name: Run tests
-        run: cargo test
+        run: |
+          # 単体テスト
+          cargo test 
+

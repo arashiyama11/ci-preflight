@@ -25,6 +25,7 @@ struct CmdKindRules {
 struct SubcommandRule {
     matcher: SubcommandMatcher,
     kind: RuleCmdKind,
+    ignore_options: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -53,6 +54,8 @@ pub enum CmdKindRulesError {
     InvalidArgs,
     #[error("subcommands entry field `match` must be `exact` or `prefix`")]
     InvalidMatchType,
+    #[error("subcommands entry field `ignore_options` must be a boolean")]
+    InvalidIgnoreOptions,
     #[error("subcommands `prefix` match requires string field `pattern`")]
     MissingPrefixPattern,
     #[error("subcommands `prefix` match field `arg_index` must be non-negative integer")]
@@ -62,6 +65,7 @@ pub enum CmdKindRulesError {
 }
 
 pub fn classify_simple_command(words: &[String]) -> Result<RuleCmdKind, CmdKindRulesError> {
+    let words = strip_command_wrappers(words);
     if words.is_empty() {
         return Ok(RuleCmdKind::Other);
     }
@@ -81,8 +85,79 @@ pub fn classify_simple_command(words: &[String]) -> Result<RuleCmdKind, CmdKindR
         .unwrap_or(RuleCmdKind::Other))
 }
 
+fn strip_command_wrappers(words: &[String]) -> &[String] {
+    let mut out = words;
+    while let Some(head) = out.first().map(|s| s.as_str()) {
+        match head {
+            // Treat sudo as a transparent wrapper for command intent classification.
+            "sudo" => {
+                out = &out[1..];
+                while let Some(arg) = out.first() {
+                    if arg == "--" {
+                        out = &out[1..];
+                        break;
+                    }
+                    if arg.starts_with('-') && arg != "-" {
+                        out = &out[1..];
+                        continue;
+                    }
+                    break;
+                }
+            }
+            // `env KEY=VAL cmd` / `env -i KEY=VAL cmd`
+            "env" => {
+                out = &out[1..];
+                while let Some(arg) = out.first() {
+                    if arg == "--" {
+                        out = &out[1..];
+                        break;
+                    }
+                    if arg.starts_with('-') && arg != "-" {
+                        out = &out[1..];
+                        continue;
+                    }
+                    if arg.contains('=') && !arg.starts_with('=') {
+                        out = &out[1..];
+                        continue;
+                    }
+                    break;
+                }
+            }
+            // `command cargo test`, `command -v cargo`
+            "command" => {
+                out = &out[1..];
+                while let Some(arg) = out.first() {
+                    if arg.starts_with('-') && arg != "-" {
+                        out = &out[1..];
+                        continue;
+                    }
+                    break;
+                }
+            }
+            // `time cargo test`, `time -p cargo test`
+            "time" => {
+                out = &out[1..];
+                while let Some(arg) = out.first() {
+                    if arg.starts_with('-') && arg != "-" {
+                        out = &out[1..];
+                        continue;
+                    }
+                    break;
+                }
+            }
+            _ => break,
+        }
+    }
+    out
+}
+
 fn classify_subcommand(tail: &[String], sub_rules: &[SubcommandRule]) -> Option<RuleCmdKind> {
     for rule in sub_rules {
+        let tail = if rule.ignore_options {
+            strip_leading_options(tail)
+        } else {
+            tail
+        };
         match &rule.matcher {
             SubcommandMatcher::Exact(args) => {
                 if tail.len() < args.len() {
@@ -107,6 +182,23 @@ fn classify_subcommand(tail: &[String], sub_rules: &[SubcommandRule]) -> Option<
         }
     }
     None
+}
+
+fn strip_leading_options(args: &[String]) -> &[String] {
+    let mut i = 0usize;
+    while i < args.len() {
+        let arg = &args[i];
+        if arg == "--" {
+            i += 1;
+            break;
+        }
+        if arg.starts_with('-') && arg != "-" {
+            i += 1;
+            continue;
+        }
+        break;
+    }
+    &args[i..]
 }
 
 fn load_rules() -> Result<CmdKindRules, CmdKindRulesError> {
@@ -164,10 +256,15 @@ fn parse_subcommands(
         let cmd = get_required_string(map, "subcommands", "cmd")?;
         let matcher = parse_subcommand_matcher(map)?;
         let kind = parse_kind(get_required_string(map, "subcommands", "kind")?)?;
+        let ignore_options = parse_ignore_options(map)?;
 
         out.entry(cmd.to_string())
             .or_default()
-            .push(SubcommandRule { matcher, kind });
+            .push(SubcommandRule {
+                matcher,
+                kind,
+                ignore_options,
+            });
     }
 
     for rules in out.values_mut() {
@@ -221,6 +318,17 @@ fn parse_subcommand_matcher(
             })
         }
         _ => Err(CmdKindRulesError::InvalidMatchType),
+    }
+}
+
+fn parse_ignore_options(map: &yaml_rust2::yaml::Hash) -> Result<bool, CmdKindRulesError> {
+    match map
+        .get(&Yaml::String("ignore_options".to_string()))
+        .map(Yaml::as_bool)
+    {
+        None => Ok(false),
+        Some(Some(v)) => Ok(v),
+        Some(None) => Err(CmdKindRulesError::InvalidIgnoreOptions),
     }
 }
 
@@ -287,6 +395,72 @@ mod tests {
             ])
             .unwrap(),
             RuleCmdKind::Assert
+        );
+        assert_eq!(
+            classify_simple_command(&[
+                "sudo".to_string(),
+                "apt-get".to_string(),
+                "install".to_string(),
+            ])
+            .unwrap(),
+            RuleCmdKind::EnvSetup
+        );
+        assert_eq!(
+            classify_simple_command(&[
+                "sudo".to_string(),
+                "-E".to_string(),
+                "apt-get".to_string(),
+                "install".to_string(),
+            ])
+            .unwrap(),
+            RuleCmdKind::EnvSetup
+        );
+        assert_eq!(
+            classify_simple_command(&[
+                "env".to_string(),
+                "RUSTFLAGS=-Dwarnings".to_string(),
+                "cargo".to_string(),
+                "test".to_string(),
+            ])
+            .unwrap(),
+            RuleCmdKind::Test
+        );
+        assert_eq!(
+            classify_simple_command(&[
+                "command".to_string(),
+                "cargo".to_string(),
+                "test".to_string(),
+            ])
+            .unwrap(),
+            RuleCmdKind::Test
+        );
+        assert_eq!(
+            classify_simple_command(&[
+                "time".to_string(),
+                "-p".to_string(),
+                "cargo".to_string(),
+                "test".to_string(),
+            ])
+            .unwrap(),
+            RuleCmdKind::Test
+        );
+        assert_eq!(
+            classify_simple_command(&[
+                "npm".to_string(),
+                "--silent".to_string(),
+                "test".to_string()
+            ])
+            .unwrap(),
+            RuleCmdKind::Test
+        );
+        assert_eq!(
+            classify_simple_command(&[
+                "cargo".to_string(),
+                "--locked".to_string(),
+                "test".to_string()
+            ])
+            .unwrap(),
+            RuleCmdKind::Test
         );
     }
 }

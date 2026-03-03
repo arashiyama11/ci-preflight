@@ -1,0 +1,69 @@
+actions/checkout:
+  required_tools:
+    - git
+  cmd_kind: EnvSetup
+  special_action: Checkout
+  confidence: high
+  notes: checkout requires git in runner context
+
+actions/setup-node:
+  required_tools: []
+  cmd_kind: EnvSetup
+  confidence: medium
+  notes: treated as known setup action; external tool requirement is context-dependent
+
+actions/setup-python:
+  required_tools: []
+  cmd_kind: EnvSetup
+  confidence: medium
+  notes: treated as known setup action; external tool requirement is context-dependent
+
+actions/setup-java:
+  required_tools: []
+  cmd_kind: EnvSetup
+  confidence: medium
+  notes: treated as known setup action; external tool requirement is context-dependent
+
+actions/upload-artifact:
+  required_tools: []
+  cmd_kind: Other
+  special_action: ArtifactUpload
+  confidence: high
+  notes: treated as known JS action with no additional host tool requirement in phase 1
+
+actions/download-artifact:
+  required_tools: []
+  cmd_kind: Other
+  special_action: ArtifactDownload
+  confidence: high
+  notes: treated as known JS action with no additional host tool requirement in phase 1
+
+actions-rs/toolchain:
+  required_tools: []
+  cmd_kind: EnvSetup
+  confidence: medium
+  notes: treated as known setup action; detailed tool requirement depends on runner setup
+
+nick-fields/retry:
+  required_tools: []
+  shell_inputs:
+    - command
+  cmd_kind: Other
+  confidence: medium
+  notes: command is executed as shell script inside the action
+
+nick-fields/assert-action:
+  required_tools: []
+  cmd_kind: Assert
+  confidence: high
+  notes: assertion action for pass/fail checks
+
+reactivecircus/android-emulator-runner:
+  required_tools: []
+  shell_inputs:
+    - script
+    - pre-emulator-launch-script
+    - post-emulator-launch-script
+  cmd_kind: Other
+  confidence: medium
+  notes: script-like with inputs are executed in shell context

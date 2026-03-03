@@ -33,10 +33,20 @@ impl ToolCheckReport {
     }
 }
 
+#[allow(dead_code)]
 pub fn check_workflow_tools(
     root: AstId,
     arena: &AstArena,
     catalog: &ActionCatalog,
+) -> ToolCheckReport {
+    check_workflow_tools_with_base_dir(root, arena, catalog, None)
+}
+
+pub fn check_workflow_tools_with_base_dir(
+    root: AstId,
+    arena: &AstArena,
+    catalog: &ActionCatalog,
+    base_dir: Option<&Path>,
 ) -> ToolCheckReport {
     let mut required = BTreeSet::new();
     let mut unknown_commands = BTreeSet::new();
@@ -52,7 +62,7 @@ pub fn check_workflow_tools(
     );
 
     let required_tools: Vec<String> = required.into_iter().collect();
-    let (found_tools, missing_tools) = check_tools_installed(&required_tools);
+    let (found_tools, missing_tools) = check_tools_installed(&required_tools, base_dir);
 
     ToolCheckReport {
         required_tools,
@@ -242,16 +252,19 @@ fn collect_from_sh(
 fn is_shell_builtin(cmd: &str) -> bool {
     matches!(
         cmd,
-        "cd" | "echo" | "export" | "test" | ":" | "true" | "false" | "exit" | "set" | "[["
+        "cd" | "echo" | "export" | "test" | ":" | "true" | "false" | "exit" | "set" | "[" | "[["
     )
 }
 
-pub fn check_tools_installed(required_tools: &[String]) -> (Vec<String>, Vec<String>) {
+pub fn check_tools_installed(
+    required_tools: &[String],
+    base_dir: Option<&Path>,
+) -> (Vec<String>, Vec<String>) {
     let mut found = Vec::new();
     let mut missing = Vec::new();
 
     for tool in required_tools {
-        if is_executable_on_path(tool) {
+        if is_executable_on_path(tool, base_dir) {
             found.push(tool.clone());
         } else {
             missing.push(tool.clone());
@@ -261,13 +274,23 @@ pub fn check_tools_installed(required_tools: &[String]) -> (Vec<String>, Vec<Str
     (found, missing)
 }
 
-fn is_executable_on_path(tool: &str) -> bool {
+fn is_executable_on_path(tool: &str, base_dir: Option<&Path>) -> bool {
     if tool.is_empty() {
         return false;
     }
 
     if tool.contains('/') {
-        return is_executable_file(Path::new(tool));
+        let path = Path::new(tool);
+        if path.is_absolute() {
+            return is_executable_file(path);
+        }
+        if let Some(base_dir) = base_dir {
+            let candidate = base_dir.join(path);
+            if is_executable_file(&candidate) {
+                return true;
+            }
+        }
+        return is_executable_file(path);
     }
 
     let Some(path_os) = std::env::var_os("PATH") else {
@@ -316,6 +339,7 @@ mod tests {
         assert!(is_shell_builtin("echo"));
         assert!(is_shell_builtin("cd"));
         assert!(is_shell_builtin("set"));
+        assert!(is_shell_builtin("["));
         assert!(is_shell_builtin("[["));
         assert!(!is_shell_builtin("cargo"));
     }

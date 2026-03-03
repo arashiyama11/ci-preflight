@@ -45,6 +45,7 @@ fn main() -> Result<()> {
     }
 
     if let Some(path) = cli.check_tools {
+        let workflow_base_dir = path.parent().map(|p| p.to_path_buf());
         let text = std::fs::read_to_string(&path)?;
         let mut source_map = actions_parser::source_map::SourceMap::new();
         let source_id = source_map.add_yaml(path, "workflow".to_string(), text);
@@ -59,7 +60,12 @@ fn main() -> Result<()> {
         }
 
         let catalog = action_catalog::load_action_catalog()?;
-        let report = env_check::check_workflow_tools(root, &arena, &catalog);
+        let report = env_check::check_workflow_tools_with_base_dir(
+            root,
+            &arena,
+            &catalog,
+            workflow_base_dir.as_deref(),
+        );
 
         println!("required: {}", report.required_tools.join(", "));
         println!("found: {}", report.found_tools.join(", "));
@@ -103,7 +109,6 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
-    println!("Hello, world!");
     Ok(())
 }
 

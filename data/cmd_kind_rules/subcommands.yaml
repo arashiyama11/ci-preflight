@@ -1,0 +1,45 @@
+- cmd: npm
+  args: [test]
+  kind: Test
+  ignore_options: true
+- cmd: npm
+  args: [run, build]
+  kind: TestSetup
+  ignore_options: true
+- cmd: npm
+  args: [install]
+  kind: EnvSetup
+  ignore_options: true
+- cmd: npm
+  args: [ci]
+  kind: EnvSetup
+  ignore_options: true
+
+- cmd: cargo
+  args: [test]
+  kind: Test
+  ignore_options: true
+- cmd: cargo
+  args: [build]
+  kind: TestSetup
+  ignore_options: true
+- cmd: cargo
+  args: [install]
+  kind: EnvSetup
+  ignore_options: true
+
+- cmd: gradle
+  match: prefix
+  arg_index: 0
+  pattern: test
+  kind: Test
+  ignore_options: true
+- cmd: gradle
+  args: [assemble]
+  kind: TestSetup
+  ignore_options: true
+
+- cmd: go
+  args: [test]
+  kind: Test
+  ignore_options: true

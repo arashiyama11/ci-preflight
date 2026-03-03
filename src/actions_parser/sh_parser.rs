@@ -295,4 +295,12 @@ mod tests {
         let restored = pre.placeholders.restore(&pre.text);
         assert_eq!(restored, src);
     }
+
+    #[test]
+    fn preprocess_ignores_unclosed_expression() {
+        let src = r#"echo "${{ github.repository }""#;
+        let pre = preprocess_github_expressions(src);
+        assert_eq!(pre.text, src);
+        assert!(pre.placeholders.replacements.is_empty());
+    }
 }
