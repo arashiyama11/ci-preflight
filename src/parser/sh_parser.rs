@@ -1,7 +1,7 @@
-use crate::actions_parser::arena::AstArena;
-use crate::actions_parser::sh_parser::sh_ast::ShProgram;
-use crate::actions_parser::sh_parser::sh_parser::ShParser;
-use crate::actions_parser::source_map::{SourceId, SourceMap};
+use crate::parser::arena::AstArena;
+use crate::parser::sh_parser::sh_ast::ShProgram;
+use crate::parser::sh_parser::sh_parser::ShParser;
+use crate::parser::source_map::{SourceId, SourceMap};
 use sh_lexer::Lexer;
 use thiserror::Error;
 
@@ -187,7 +187,7 @@ pub fn parse_sh_with_arena(
 }
 
 fn restore_expr_placeholders_in_ast(
-    root: crate::actions_parser::arena::AstId,
+    root: crate::parser::arena::AstId,
     arena: &mut AstArena,
     placeholders: &ExprPlaceholderMap,
 ) {
@@ -199,24 +199,24 @@ fn restore_expr_placeholders_in_ast(
     while let Some(id) = stack.pop() {
         let node = arena.get_sh(id).clone();
         match node {
-            crate::actions_parser::sh_parser::sh_ast::ShAstNode::List(items) => {
+            crate::parser::sh_parser::sh_ast::ShAstNode::List(items) => {
                 for item in items {
                     stack.push(item.body);
                 }
             }
-            crate::actions_parser::sh_parser::sh_ast::ShAstNode::AndOr { first, rest } => {
+            crate::parser::sh_parser::sh_ast::ShAstNode::AndOr { first, rest } => {
                 stack.push(first);
                 for n in rest {
                     stack.push(n.body);
                 }
             }
-            crate::actions_parser::sh_parser::sh_ast::ShAstNode::Pipeline { first, rest } => {
+            crate::parser::sh_parser::sh_ast::ShAstNode::Pipeline { first, rest } => {
                 stack.push(first);
                 for n in rest {
                     stack.push(n);
                 }
             }
-            crate::actions_parser::sh_parser::sh_ast::ShAstNode::SimpleCommand {
+            crate::parser::sh_parser::sh_ast::ShAstNode::SimpleCommand {
                 assignments,
                 argv,
                 redirs,
@@ -231,7 +231,7 @@ fn restore_expr_placeholders_in_ast(
                     stack.push(n);
                 }
             }
-            crate::actions_parser::sh_parser::sh_ast::ShAstNode::If {
+            crate::parser::sh_parser::sh_ast::ShAstNode::If {
                 cond,
                 then_part,
                 else_part,
@@ -242,38 +242,38 @@ fn restore_expr_placeholders_in_ast(
                     stack.push(n);
                 }
             }
-            crate::actions_parser::sh_parser::sh_ast::ShAstNode::While { cond, body } => {
+            crate::parser::sh_parser::sh_ast::ShAstNode::While { cond, body } => {
                 stack.push(cond);
                 stack.push(body);
             }
-            crate::actions_parser::sh_parser::sh_ast::ShAstNode::Subshell { body }
-            | crate::actions_parser::sh_parser::sh_ast::ShAstNode::CommandSubstitution { body }
-            | crate::actions_parser::sh_parser::sh_ast::ShAstNode::Group { body } => {
+            crate::parser::sh_parser::sh_ast::ShAstNode::Subshell { body }
+            | crate::parser::sh_parser::sh_ast::ShAstNode::CommandSubstitution { body }
+            | crate::parser::sh_parser::sh_ast::ShAstNode::Group { body } => {
                 stack.push(body);
             }
-            crate::actions_parser::sh_parser::sh_ast::ShAstNode::For { var, items, body } => {
+            crate::parser::sh_parser::sh_ast::ShAstNode::For { var, items, body } => {
                 stack.push(var);
                 for n in items {
                     stack.push(n);
                 }
                 stack.push(body);
             }
-            crate::actions_parser::sh_parser::sh_ast::ShAstNode::FunctionDef { name, body } => {
+            crate::parser::sh_parser::sh_ast::ShAstNode::FunctionDef { name, body } => {
                 stack.push(name);
                 stack.push(body);
             }
-            crate::actions_parser::sh_parser::sh_ast::ShAstNode::Word(_)
-            | crate::actions_parser::sh_parser::sh_ast::ShAstNode::Assignment(_)
-            | crate::actions_parser::sh_parser::sh_ast::ShAstNode::Redir { .. }
-            | crate::actions_parser::sh_parser::sh_ast::ShAstNode::Unknown => {}
+            crate::parser::sh_parser::sh_ast::ShAstNode::Word(_)
+            | crate::parser::sh_parser::sh_ast::ShAstNode::Assignment(_)
+            | crate::parser::sh_parser::sh_ast::ShAstNode::Redir { .. }
+            | crate::parser::sh_parser::sh_ast::ShAstNode::Unknown => {}
         }
 
         match arena.get_sh_mut(id) {
-            crate::actions_parser::sh_parser::sh_ast::ShAstNode::Word(s)
-            | crate::actions_parser::sh_parser::sh_ast::ShAstNode::Assignment(s) => {
+            crate::parser::sh_parser::sh_ast::ShAstNode::Word(s)
+            | crate::parser::sh_parser::sh_ast::ShAstNode::Assignment(s) => {
                 *s = placeholders.restore(s);
             }
-            crate::actions_parser::sh_parser::sh_ast::ShAstNode::Redir { op, body } => {
+            crate::parser::sh_parser::sh_ast::ShAstNode::Redir { op, body } => {
                 *op = placeholders.restore(op);
                 *body = placeholders.restore(body);
             }

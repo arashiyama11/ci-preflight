@@ -1,4 +1,4 @@
-use crate::actions_parser::source_map::SourceId;
+use crate::parser::source_map::SourceId;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Span {

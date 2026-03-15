@@ -1,10 +1,10 @@
 use super::{CmdKind, SpecialActionKind};
-use crate::action_catalog::{ActionCatalog, action_entry_for_uses, normalize_uses};
-use crate::actions_parser::arena::{AstArena, AstId};
-use crate::actions_parser::sh_parser::parse_sh;
-use crate::actions_parser::sh_parser::sh_ast::ShAstNode;
-use crate::actions_parser::source_map::SourceMap;
-use crate::cmd_kind_rules::{RuleCmdKind, classify_simple_command};
+use crate::analyzer::action_catalog::{ActionCatalog, action_entry_for_uses, normalize_uses};
+use crate::analyzer::cmd_kind_rules::{RuleCmdKind, classify_simple_command};
+use crate::parser::arena::{AstArena, AstId};
+use crate::parser::sh_parser::parse_sh;
+use crate::parser::sh_parser::sh_ast::ShAstNode;
+use crate::parser::source_map::SourceMap;
 use std::path::PathBuf;
 
 pub(super) fn parse_shell_command_words(script: &str) -> Vec<Vec<String>> {

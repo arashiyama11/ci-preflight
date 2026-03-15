@@ -1,9 +1,11 @@
-use crate::action_catalog::{ActionCatalog, required_tools_for_uses, shell_input_keys_for_uses};
-use crate::actions_parser::actions_ast::ActionsAst;
-use crate::actions_parser::arena::{AstArena, AstId};
-use crate::actions_parser::sh_parser::parse_sh;
-use crate::actions_parser::sh_parser::sh_ast::ShAstNode;
-use crate::actions_parser::source_map::SourceMap;
+use crate::analyzer::action_catalog::{
+    ActionCatalog, required_tools_for_uses, shell_input_keys_for_uses,
+};
+use crate::parser::actions_ast::ActionsAst;
+use crate::parser::arena::{AstArena, AstId};
+use crate::parser::sh_parser::parse_sh;
+use crate::parser::sh_parser::sh_ast::ShAstNode;
+use crate::parser::source_map::SourceMap;
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -331,8 +333,8 @@ fn is_executable_file(path: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{PreflightStatus, check_workflow_tools, is_shell_builtin};
-    use crate::action_catalog::{ActionCatalog, ActionCatalogEntry, load_action_catalog};
-    use crate::actions_parser;
+    use crate::analyzer::action_catalog::{ActionCatalog, ActionCatalogEntry, load_action_catalog};
+    use crate::parser;
 
     #[test]
     fn builtins_are_filtered() {
@@ -359,14 +361,13 @@ jobs:
           cargo test
 "#;
 
-        let mut source_map = actions_parser::source_map::SourceMap::new();
+        let mut source_map = parser::source_map::SourceMap::new();
         let source_id = source_map.add_yaml(
             std::path::PathBuf::from("wf.yml"),
             "workflow".to_string(),
             yaml.to_string(),
         );
-        let (root, arena, errs) =
-            actions_parser::parse_actions_yaml(&mut source_map, &source_id).unwrap();
+        let (root, arena, errs) = parser::parse_actions_yaml(&mut source_map, &source_id).unwrap();
         assert!(errs.is_empty());
 
         let mut catalog = ActionCatalog::new();
@@ -390,14 +391,13 @@ jobs:
     #[test]
     fn fixture_mixed_uses_tracks_unknown_and_known() {
         let yaml = std::fs::read_to_string("test/uses_mixed.yml").unwrap();
-        let mut source_map = actions_parser::source_map::SourceMap::new();
+        let mut source_map = parser::source_map::SourceMap::new();
         let source_id = source_map.add_yaml(
             std::path::PathBuf::from("test/uses_mixed.yml"),
             "workflow".to_string(),
             yaml,
         );
-        let (root, arena, errs) =
-            actions_parser::parse_actions_yaml(&mut source_map, &source_id).unwrap();
+        let (root, arena, errs) = parser::parse_actions_yaml(&mut source_map, &source_id).unwrap();
         assert!(errs.is_empty());
 
         let catalog = load_action_catalog().unwrap();
@@ -420,14 +420,13 @@ jobs:
     #[test]
     fn fixture_missing_tool_fails_preflight() {
         let yaml = std::fs::read_to_string("test/missing_tool.yml").unwrap();
-        let mut source_map = actions_parser::source_map::SourceMap::new();
+        let mut source_map = parser::source_map::SourceMap::new();
         let source_id = source_map.add_yaml(
             std::path::PathBuf::from("test/missing_tool.yml"),
             "workflow".to_string(),
             yaml,
         );
-        let (root, arena, errs) =
-            actions_parser::parse_actions_yaml(&mut source_map, &source_id).unwrap();
+        let (root, arena, errs) = parser::parse_actions_yaml(&mut source_map, &source_id).unwrap();
         assert!(errs.is_empty());
 
         let catalog: ActionCatalog = ActionCatalog::new();
@@ -457,14 +456,13 @@ jobs:
             cargo test
 "#;
 
-        let mut source_map = actions_parser::source_map::SourceMap::new();
+        let mut source_map = parser::source_map::SourceMap::new();
         let source_id = source_map.add_yaml(
             std::path::PathBuf::from("wf.yml"),
             "workflow".to_string(),
             yaml.to_string(),
         );
-        let (root, arena, errs) =
-            actions_parser::parse_actions_yaml(&mut source_map, &source_id).unwrap();
+        let (root, arena, errs) = parser::parse_actions_yaml(&mut source_map, &source_id).unwrap();
         assert!(errs.is_empty());
 
         let catalog = load_action_catalog().unwrap();
@@ -486,14 +484,13 @@ jobs:
           LATEST_RELEASE=$(curl -s https://example.com | jq -r '.tag_name')
 "#;
 
-        let mut source_map = actions_parser::source_map::SourceMap::new();
+        let mut source_map = parser::source_map::SourceMap::new();
         let source_id = source_map.add_yaml(
             std::path::PathBuf::from("wf.yml"),
             "workflow".to_string(),
             yaml.to_string(),
         );
-        let (root, arena, errs) =
-            actions_parser::parse_actions_yaml(&mut source_map, &source_id).unwrap();
+        let (root, arena, errs) = parser::parse_actions_yaml(&mut source_map, &source_id).unwrap();
         assert!(errs.is_empty());
 
         let catalog = ActionCatalog::new();
@@ -524,14 +521,13 @@ jobs:
             | jq -r ".assets[] | select(.name == \"$APK_NAME\") | .id")
 "#;
 
-        let mut source_map = actions_parser::source_map::SourceMap::new();
+        let mut source_map = parser::source_map::SourceMap::new();
         let source_id = source_map.add_yaml(
             std::path::PathBuf::from("wf.yml"),
             "workflow".to_string(),
             yaml.to_string(),
         );
-        let (root, arena, errs) =
-            actions_parser::parse_actions_yaml(&mut source_map, &source_id).unwrap();
+        let (root, arena, errs) = parser::parse_actions_yaml(&mut source_map, &source_id).unwrap();
         assert!(errs.is_empty());
 
         let catalog = ActionCatalog::new();

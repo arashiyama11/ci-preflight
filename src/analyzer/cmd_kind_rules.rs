@@ -3,8 +3,8 @@ use std::collections::BTreeMap;
 use thiserror::Error;
 use yaml_rust2::{Yaml, YamlLoader};
 
-const SIMPLE_COMMANDS_YAML: &str = include_str!("../data/cmd_kind_rules/simple_commands.yaml");
-const SUBCOMMANDS_YAML: &str = include_str!("../data/cmd_kind_rules/subcommands.yaml");
+const SIMPLE_COMMANDS_YAML: &str = include_str!("../../data/cmd_kind_rules/simple_commands.yaml");
+const SUBCOMMANDS_YAML: &str = include_str!("../../data/cmd_kind_rules/subcommands.yaml");
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RuleCmdKind {

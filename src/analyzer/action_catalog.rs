@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use thiserror::Error;
 use yaml_rust2::{Yaml, YamlLoader};
 
-const ACTION_CATALOG_YAML: &str = include_str!("../data/action_catalog.yaml");
+const ACTION_CATALOG_YAML: &str = include_str!("../../data/action_catalog.yaml");
 
 #[derive(Clone, Debug)]
 pub struct ActionCatalogEntry {

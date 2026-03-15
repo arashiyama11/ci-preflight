@@ -1,4 +1,4 @@
-use crate::actions_parser::arena::AstId;
+use crate::parser::arena::AstId;
 
 #[derive(Debug, Clone)]
 pub struct ShProgram {

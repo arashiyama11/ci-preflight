@@ -1,7 +1,7 @@
 #![allow(dead_code)]
 
 use super::sh_token::{ShToken, ShTokenKind, Span, WordKind};
-use crate::actions_parser::source_map::SourceId;
+use crate::parser::source_map::SourceId;
 use std::{collections::VecDeque, result::Result};
 use thiserror::Error;
 
@@ -315,11 +315,11 @@ pub fn classify_word(s: &str) -> ShTokenKind {
 #[cfg(test)]
 mod lexer_test {
 
-    use crate::actions_parser::sh_parser::{
+    use crate::parser::sh_parser::{
         sh_lexer::Lexer,
         sh_token::{ShTokenKind, WordKind},
     };
-    use crate::actions_parser::source_map::SourceId;
+    use crate::parser::source_map::SourceId;
 
     #[test]
     fn test() {

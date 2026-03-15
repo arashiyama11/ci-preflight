@@ -2,7 +2,7 @@
 
 use super::sh_ast::{AndOrItem, AndOrOp, ListItem, SeparatorKind, ShAstNode, ShProgram};
 use super::sh_token::{ShToken, ShTokenKind, WordKind};
-use crate::actions_parser::arena::{AstArena, AstId};
+use crate::parser::arena::{AstArena, AstId};
 use thiserror::Error;
 
 #[derive(Error, Debug)]
@@ -1046,12 +1046,12 @@ fn is_assignment_word(s: &str) -> bool {
 #[cfg(test)]
 mod parser_test {
 
-    use crate::actions_parser::sh_parser::{
+    use crate::parser::sh_parser::{
         sh_lexer::Lexer,
         sh_parser::{ShParser, format_ast_tree},
         sh_token::ShToken,
     };
-    use crate::actions_parser::source_map::SourceId;
+    use crate::parser::source_map::SourceId;
 
     #[test]
     fn test() {

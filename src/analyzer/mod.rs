@@ -1,8 +1,13 @@
 #![allow(dead_code)]
 
-use crate::action_catalog::{ActionCatalog, load_action_catalog, shell_input_keys_for_uses};
-use crate::actions_parser::actions_ast::ActionsAst;
-use crate::actions_parser::arena::{AstArena, AstId};
+pub mod action_catalog;
+pub mod cmd_kind_rules;
+
+use crate::analyzer::action_catalog::{
+    ActionCatalog, load_action_catalog, shell_input_keys_for_uses,
+};
+use crate::parser::actions_ast::ActionsAst;
+use crate::parser::arena::{AstArena, AstId};
 use std::collections::BTreeMap;
 
 mod annotate;
@@ -86,23 +91,6 @@ pub struct AnalysisResult {
 pub struct AnalysisError {
     pub message: String,
     pub at: Option<AstId>,
-}
-
-#[derive(Clone, Debug)]
-pub struct PlanOptions {
-    pub include_env_setup: bool,
-    pub include_other: bool,
-}
-
-#[derive(Clone, Debug)]
-pub struct ExecutionPlan {
-    pub commands: Vec<PlannedCommand>,
-}
-
-#[derive(Clone, Debug)]
-pub struct PlannedCommand {
-    pub ast_id: AstId,
-    pub kind: CmdKind,
 }
 
 pub fn analyze_actions(root: AstId, arena: &AstArena) -> AnalysisResult {
@@ -234,26 +222,6 @@ fn analyze_uses_shell_inputs(
         }
     }
     out
-}
-
-pub fn build_execution_plan(analysis: &AnalysisResult, opts: &PlanOptions) -> ExecutionPlan {
-    let mut commands = Vec::new();
-    for step in &analysis.steps {
-        for command in &step.commands {
-            let kind = command.attr.kind.clone().unwrap_or(CmdKind::Other);
-            if matches!(kind, CmdKind::EnvSetup) && !opts.include_env_setup {
-                continue;
-            }
-            if matches!(kind, CmdKind::Other) && !opts.include_other {
-                continue;
-            }
-            commands.push(PlannedCommand {
-                ast_id: command.ast_id,
-                kind,
-            });
-        }
-    }
-    ExecutionPlan { commands }
 }
 
 pub fn format_cmd_kind_lines(analysis: &AnalysisResult) -> Vec<String> {

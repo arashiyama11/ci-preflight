@@ -2,7 +2,7 @@ use super::{
     AnalysisResult, CmdKind, StepPlan, classify_simple_command_from_words, format_command_kind,
     format_step_kinds,
 };
-use crate::action_catalog::{load_action_catalog, shell_input_keys_for_uses};
+use crate::analyzer::action_catalog::{load_action_catalog, shell_input_keys_for_uses};
 
 pub fn annotate_yaml_with_cmd_kind(yaml: &str, analysis: &AnalysisResult) -> String {
     let mut step_index = 0usize;

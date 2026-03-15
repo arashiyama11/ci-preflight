@@ -1,17 +1,12 @@
-use super::{
-    CmdKind, PlanOptions, analyze_actions, analyze_simple_command, annotate_yaml_with_cmd_kind,
-    build_execution_plan, format_cmd_kind_lines,
-};
-use crate::action_catalog::{ActionCatalog, ActionCatalogEntry};
-use crate::actions_parser::actions_ast::{ActionsAst, RunsOn};
-use crate::actions_parser::arena::AstArena;
-use crate::actions_parser::sh_parser::sh_ast::{ListItem, SeparatorKind, ShAstNode};
+use super::{CmdKind, analyze_actions, analyze_simple_command, annotate_yaml_with_cmd_kind, format_cmd_kind_lines};
+use crate::analyzer::action_catalog::{ActionCatalog, ActionCatalogEntry};
+use crate::optimizer::{PlanOptions, build_execution_plan};
+use crate::parser::actions_ast::{ActionsAst, RunsOn};
+use crate::parser::arena::AstArena;
+use crate::parser::sh_parser::sh_ast::{ListItem, SeparatorKind, ShAstNode};
 use std::collections::BTreeMap;
 
-fn alloc_simple_command(
-    arena: &mut AstArena,
-    words: &[&str],
-) -> crate::actions_parser::arena::AstId {
+fn alloc_simple_command(arena: &mut AstArena, words: &[&str]) -> crate::parser::arena::AstId {
     let argv = words
         .iter()
         .map(|w| arena.alloc_sh(ShAstNode::Word((*w).to_string())))
@@ -174,24 +169,24 @@ fn uses_step_shell_inputs_are_classified_as_commands() {
 fn build_execution_plan_filters_only_env_and_other() {
     let analysis = super::AnalysisResult {
         steps: vec![super::StepPlan {
-            step_id: crate::actions_parser::arena::AstId(1),
+            step_id: crate::parser::arena::AstId(1),
             commands: vec![
                 super::CommandPlan {
-                    ast_id: crate::actions_parser::arena::AstId(10),
+                    ast_id: crate::parser::arena::AstId(10),
                     attr: super::Attr {
                         kind: Some(CmdKind::EnvSetup),
                         ..super::Attr::default()
                     },
                 },
                 super::CommandPlan {
-                    ast_id: crate::actions_parser::arena::AstId(11),
+                    ast_id: crate::parser::arena::AstId(11),
                     attr: super::Attr {
                         kind: Some(CmdKind::Test),
                         ..super::Attr::default()
                     },
                 },
                 super::CommandPlan {
-                    ast_id: crate::actions_parser::arena::AstId(12),
+                    ast_id: crate::parser::arena::AstId(12),
                     attr: super::Attr {
                         kind: Some(CmdKind::Other),
                         ..super::Attr::default()
@@ -218,10 +213,10 @@ fn build_execution_plan_filters_only_env_and_other() {
 fn format_lines_join_commands_and_kinds() {
     let analysis = super::AnalysisResult {
         steps: vec![super::StepPlan {
-            step_id: crate::actions_parser::arena::AstId(1),
+            step_id: crate::parser::arena::AstId(1),
             commands: vec![
                 super::CommandPlan {
-                    ast_id: crate::actions_parser::arena::AstId(10),
+                    ast_id: crate::parser::arena::AstId(10),
                     attr: super::Attr {
                         kind: Some(CmdKind::TestSetup),
                         tools: vec!["cargo build".to_string()],
@@ -229,7 +224,7 @@ fn format_lines_join_commands_and_kinds() {
                     },
                 },
                 super::CommandPlan {
-                    ast_id: crate::actions_parser::arena::AstId(11),
+                    ast_id: crate::parser::arena::AstId(11),
                     attr: super::Attr {
                         kind: Some(CmdKind::Test),
                         tools: vec!["cargo test".to_string()],
@@ -254,9 +249,9 @@ fn annotate_yaml_keeps_unrelated_lines() {
     let analysis = super::AnalysisResult {
         steps: vec![
             super::StepPlan {
-                step_id: crate::actions_parser::arena::AstId(1),
+                step_id: crate::parser::arena::AstId(1),
                 commands: vec![super::CommandPlan {
-                    ast_id: crate::actions_parser::arena::AstId(10),
+                    ast_id: crate::parser::arena::AstId(10),
                     attr: super::Attr {
                         kind: Some(CmdKind::EnvSetup),
                         special_action: Some(super::SpecialActionKind::Checkout),
@@ -266,10 +261,10 @@ fn annotate_yaml_keeps_unrelated_lines() {
                 }],
             },
             super::StepPlan {
-                step_id: crate::actions_parser::arena::AstId(2),
+                step_id: crate::parser::arena::AstId(2),
                 commands: vec![
                     super::CommandPlan {
-                        ast_id: crate::actions_parser::arena::AstId(11),
+                        ast_id: crate::parser::arena::AstId(11),
                         attr: super::Attr {
                             kind: Some(CmdKind::TestSetup),
                             tools: vec!["cargo build".to_string()],
@@ -277,7 +272,7 @@ fn annotate_yaml_keeps_unrelated_lines() {
                         },
                     },
                     super::CommandPlan {
-                        ast_id: crate::actions_parser::arena::AstId(12),
+                        ast_id: crate::parser::arena::AstId(12),
                         attr: super::Attr {
                             kind: Some(CmdKind::Test),
                             tools: vec!["cargo test".to_string()],
@@ -310,10 +305,10 @@ fn annotate_yaml_keeps_unrelated_lines() {
 fn annotate_yaml_prints_multiline_run_per_command() {
     let analysis = super::AnalysisResult {
         steps: vec![super::StepPlan {
-            step_id: crate::actions_parser::arena::AstId(2),
+            step_id: crate::parser::arena::AstId(2),
             commands: vec![
                 super::CommandPlan {
-                    ast_id: crate::actions_parser::arena::AstId(11),
+                    ast_id: crate::parser::arena::AstId(11),
                     attr: super::Attr {
                         kind: Some(CmdKind::TestSetup),
                         tools: vec!["cargo build".to_string()],
@@ -321,7 +316,7 @@ fn annotate_yaml_prints_multiline_run_per_command() {
                     },
                 },
                 super::CommandPlan {
-                    ast_id: crate::actions_parser::arena::AstId(12),
+                    ast_id: crate::parser::arena::AstId(12),
                     attr: super::Attr {
                         kind: Some(CmdKind::Test),
                         tools: vec!["cargo test".to_string()],
@@ -351,10 +346,10 @@ fn annotate_yaml_prints_multiline_run_per_command() {
 fn annotate_yaml_prints_uses_shell_input_on_script_lines() {
     let analysis = super::AnalysisResult {
         steps: vec![super::StepPlan {
-            step_id: crate::actions_parser::arena::AstId(1),
+            step_id: crate::parser::arena::AstId(1),
             commands: vec![
                 super::CommandPlan {
-                    ast_id: crate::actions_parser::arena::AstId(10),
+                    ast_id: crate::parser::arena::AstId(10),
                     attr: super::Attr {
                         kind: Some(CmdKind::Other),
                         tools: vec!["reactivecircus/android-emulator-runner@v2".to_string()],
@@ -362,7 +357,7 @@ fn annotate_yaml_prints_uses_shell_input_on_script_lines() {
                     },
                 },
                 super::CommandPlan {
-                    ast_id: crate::actions_parser::arena::AstId(11),
+                    ast_id: crate::parser::arena::AstId(11),
                     attr: super::Attr {
                         kind: Some(CmdKind::Other),
                         tools: vec!["adb install -r app.apk".to_string()],
@@ -370,7 +365,7 @@ fn annotate_yaml_prints_uses_shell_input_on_script_lines() {
                     },
                 },
                 super::CommandPlan {
-                    ast_id: crate::actions_parser::arena::AstId(12),
+                    ast_id: crate::parser::arena::AstId(12),
                     attr: super::Attr {
                         kind: Some(CmdKind::Test),
                         tools: vec!["cargo test".to_string()],
@@ -402,9 +397,9 @@ fn annotate_yaml_prints_uses_shell_input_on_script_lines() {
 fn annotate_yaml_skips_comment_lines_in_multiline_run() {
     let analysis = super::AnalysisResult {
         steps: vec![super::StepPlan {
-            step_id: crate::actions_parser::arena::AstId(2),
+            step_id: crate::parser::arena::AstId(2),
             commands: vec![super::CommandPlan {
-                ast_id: crate::actions_parser::arena::AstId(12),
+                ast_id: crate::parser::arena::AstId(12),
                 attr: super::Attr {
                     kind: Some(CmdKind::Test),
                     tools: vec!["cargo test".to_string()],
@@ -433,10 +428,10 @@ fn annotate_yaml_skips_comment_lines_in_multiline_run() {
 fn annotate_yaml_skips_control_and_assignment_lines() {
     let analysis = super::AnalysisResult {
         steps: vec![super::StepPlan {
-            step_id: crate::actions_parser::arena::AstId(2),
+            step_id: crate::parser::arena::AstId(2),
             commands: vec![
                 super::CommandPlan {
-                    ast_id: crate::actions_parser::arena::AstId(11),
+                    ast_id: crate::parser::arena::AstId(11),
                     attr: super::Attr {
                         kind: Some(CmdKind::Other),
                         tools: vec!["[".to_string()],
@@ -444,7 +439,7 @@ fn annotate_yaml_skips_control_and_assignment_lines() {
                     },
                 },
                 super::CommandPlan {
-                    ast_id: crate::actions_parser::arena::AstId(12),
+                    ast_id: crate::parser::arena::AstId(12),
                     attr: super::Attr {
                         kind: Some(CmdKind::Test),
                         tools: vec!["cargo test".to_string()],
@@ -476,10 +471,10 @@ fn annotate_yaml_skips_control_and_assignment_lines() {
 fn annotate_yaml_multiline_keeps_other_for_simple_commands() {
     let analysis = super::AnalysisResult {
         steps: vec![super::StepPlan {
-            step_id: crate::actions_parser::arena::AstId(2),
+            step_id: crate::parser::arena::AstId(2),
             commands: vec![
                 super::CommandPlan {
-                    ast_id: crate::actions_parser::arena::AstId(11),
+                    ast_id: crate::parser::arena::AstId(11),
                     attr: super::Attr {
                         kind: Some(CmdKind::Other),
                         tools: vec!["set -x".to_string()],
@@ -487,7 +482,7 @@ fn annotate_yaml_multiline_keeps_other_for_simple_commands() {
                     },
                 },
                 super::CommandPlan {
-                    ast_id: crate::actions_parser::arena::AstId(12),
+                    ast_id: crate::parser::arena::AstId(12),
                     attr: super::Attr {
                         kind: Some(CmdKind::Test),
                         tools: vec!["cargo test".to_string()],
@@ -515,9 +510,9 @@ fn annotate_yaml_multiline_keeps_other_for_simple_commands() {
 fn annotate_yaml_multiline_line_continuation_is_single_command() {
     let analysis = super::AnalysisResult {
         steps: vec![super::StepPlan {
-            step_id: crate::actions_parser::arena::AstId(2),
+            step_id: crate::parser::arena::AstId(2),
             commands: vec![super::CommandPlan {
-                ast_id: crate::actions_parser::arena::AstId(11),
+                ast_id: crate::parser::arena::AstId(11),
                 attr: super::Attr {
                     kind: Some(CmdKind::Other),
                     tools: vec!["sudo apt-get install bison zsh".to_string()],
@@ -548,9 +543,9 @@ fn annotate_yaml_multiline_line_continuation_is_single_command() {
 fn annotate_yaml_multiline_assignment_substitution_gets_annotation() {
     let analysis = super::AnalysisResult {
         steps: vec![super::StepPlan {
-            step_id: crate::actions_parser::arena::AstId(2),
+            step_id: crate::parser::arena::AstId(2),
             commands: vec![super::CommandPlan {
-                ast_id: crate::actions_parser::arena::AstId(11),
+                ast_id: crate::parser::arena::AstId(11),
                 attr: super::Attr {
                     kind: Some(CmdKind::Other),
                     tools: vec!["curl -s".to_string()],
@@ -578,10 +573,10 @@ fn annotate_yaml_multiline_assignment_substitution_gets_annotation() {
 fn format_lines_include_special_action_kind() {
     let analysis = super::AnalysisResult {
         steps: vec![super::StepPlan {
-            step_id: crate::actions_parser::arena::AstId(1),
+            step_id: crate::parser::arena::AstId(1),
             commands: vec![
                 super::CommandPlan {
-                    ast_id: crate::actions_parser::arena::AstId(10),
+                    ast_id: crate::parser::arena::AstId(10),
                     attr: super::Attr {
                         kind: Some(CmdKind::EnvSetup),
                         special_action: Some(super::SpecialActionKind::Checkout),
@@ -590,7 +585,7 @@ fn format_lines_include_special_action_kind() {
                     },
                 },
                 super::CommandPlan {
-                    ast_id: crate::actions_parser::arena::AstId(11),
+                    ast_id: crate::parser::arena::AstId(11),
                     attr: super::Attr {
                         kind: Some(CmdKind::Other),
                         special_action: Some(super::SpecialActionKind::ArtifactUpload),

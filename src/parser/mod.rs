@@ -5,9 +5,9 @@ pub(crate) mod source_map;
 
 pub(crate) mod arena;
 
-use crate::actions_parser::arena::{AstArena, AstId};
-use crate::actions_parser::parser::ActionsParseError;
-use crate::actions_parser::source_map::{SourceId, SourceMap};
+use crate::parser::arena::{AstArena, AstId};
+use crate::parser::parser::ActionsParseError;
+use crate::parser::source_map::{SourceId, SourceMap};
 
 pub fn parse_actions_yaml(
     source_map: &mut SourceMap,

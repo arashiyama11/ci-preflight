@@ -1,7 +1,7 @@
 #![allow(dead_code)]
 
-use crate::actions_parser::actions_ast::ActionsAst;
-use crate::actions_parser::sh_parser::sh_ast::ShAstNode;
+use crate::parser::actions_ast::ActionsAst;
+use crate::parser::sh_parser::sh_ast::ShAstNode;
 use std::collections::BTreeMap;
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]

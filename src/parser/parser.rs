@@ -1,9 +1,9 @@
-use crate::actions_parser::actions_ast::{
+use crate::parser::actions_ast::{
     ActionsAst, Concurrency, Container, ContainerCredentials, ContainerSpec, Defaults, Permissions,
     RunsOn, ScalarValue, Strategy, StringOrArray,
 };
-use crate::actions_parser::arena::{AstArena, AstId};
-use crate::actions_parser::source_map::{SourceId, SourceMap};
+use crate::parser::arena::{AstArena, AstId};
+use crate::parser::source_map::{SourceId, SourceMap};
 use std::collections::BTreeMap;
 use std::fmt::Write;
 use thiserror::Error;
@@ -26,30 +26,28 @@ pub enum ActionsParseError {
     },
 }
 
-fn sh_error_location(
-    err: &crate::actions_parser::sh_parser::ShParseError,
-) -> Option<ParseLocation> {
+fn sh_error_location(err: &crate::parser::sh_parser::ShParseError) -> Option<ParseLocation> {
     match err {
-        crate::actions_parser::sh_parser::ShParseError::Lexer(
-            crate::actions_parser::sh_parser::LexerError::UnexpectedEof(span),
+        crate::parser::sh_parser::ShParseError::Lexer(
+            crate::parser::sh_parser::LexerError::UnexpectedEof(span),
         ) => Some(ParseLocation {
             source_id: span.source_id,
             span: Some((span.index, span.len)),
         }),
-        crate::actions_parser::sh_parser::ShParseError::Lexer(
-            crate::actions_parser::sh_parser::LexerError::Unknown,
+        crate::parser::sh_parser::ShParseError::Lexer(
+            crate::parser::sh_parser::LexerError::Unknown,
         ) => None,
-        crate::actions_parser::sh_parser::ShParseError::Parser(
-            crate::actions_parser::sh_parser::ParseError::UnexpectedToken(tok),
+        crate::parser::sh_parser::ShParseError::Parser(
+            crate::parser::sh_parser::ParseError::UnexpectedToken(tok),
         ) => Some(ParseLocation {
             source_id: tok.span.source_id,
             span: Some((tok.span.index, tok.span.len)),
         }),
-        crate::actions_parser::sh_parser::ShParseError::Parser(
-            crate::actions_parser::sh_parser::ParseError::UnexpectedEof,
+        crate::parser::sh_parser::ShParseError::Parser(
+            crate::parser::sh_parser::ParseError::UnexpectedEof,
         ) => None,
-        crate::actions_parser::sh_parser::ShParseError::Parser(
-            crate::actions_parser::sh_parser::ParseError::InternalError(_),
+        crate::parser::sh_parser::ShParseError::Parser(
+            crate::parser::sh_parser::ParseError::InternalError(_),
         ) => None,
     }
 }
@@ -412,14 +410,14 @@ impl ActionsParser {
     fn format_sh_impl(&self, id: &AstId, indent: usize, out: &mut String) {
         let node = self.arena.get_sh(*id);
         match node {
-            crate::actions_parser::sh_parser::sh_ast::ShAstNode::List(items) => {
+            crate::parser::sh_parser::sh_ast::ShAstNode::List(items) => {
                 self.push_line(indent, "List", out);
                 for item in items {
                     self.push_line(indent + 1, &format!("Item sep={:?}", item.sep), out);
                     self.format_sh_impl(&item.body, indent + 2, out);
                 }
             }
-            crate::actions_parser::sh_parser::sh_ast::ShAstNode::AndOr { first, rest } => {
+            crate::parser::sh_parser::sh_ast::ShAstNode::AndOr { first, rest } => {
                 self.push_line(indent, "AndOr", out);
                 self.push_line(indent + 1, "first:", out);
                 self.format_sh_impl(first, indent + 2, out);
@@ -428,14 +426,14 @@ impl ActionsParser {
                     self.format_sh_impl(&item.body, indent + 2, out);
                 }
             }
-            crate::actions_parser::sh_parser::sh_ast::ShAstNode::Pipeline { first, rest } => {
+            crate::parser::sh_parser::sh_ast::ShAstNode::Pipeline { first, rest } => {
                 self.push_line(indent, "Pipeline", out);
                 self.format_sh_impl(first, indent + 1, out);
                 for node in rest {
                     self.format_sh_impl(node, indent + 1, out);
                 }
             }
-            crate::actions_parser::sh_parser::sh_ast::ShAstNode::SimpleCommand {
+            crate::parser::sh_parser::sh_ast::ShAstNode::SimpleCommand {
                 assignments,
                 argv,
                 redirs,
@@ -454,7 +452,7 @@ impl ActionsParser {
                     self.format_sh_impl(r, indent + 2, out);
                 }
             }
-            crate::actions_parser::sh_parser::sh_ast::ShAstNode::If {
+            crate::parser::sh_parser::sh_ast::ShAstNode::If {
                 cond,
                 then_part,
                 else_part,
@@ -469,14 +467,14 @@ impl ActionsParser {
                     self.format_sh_impl(else_part, indent + 2, out);
                 }
             }
-            crate::actions_parser::sh_parser::sh_ast::ShAstNode::While { cond, body } => {
+            crate::parser::sh_parser::sh_ast::ShAstNode::While { cond, body } => {
                 self.push_line(indent, "While", out);
                 self.push_line(indent + 1, "cond:", out);
                 self.format_sh_impl(cond, indent + 2, out);
                 self.push_line(indent + 1, "body:", out);
                 self.format_sh_impl(body, indent + 2, out);
             }
-            crate::actions_parser::sh_parser::sh_ast::ShAstNode::For { var, items, body } => {
+            crate::parser::sh_parser::sh_ast::ShAstNode::For { var, items, body } => {
                 self.push_line(indent, "For", out);
                 self.push_line(indent + 1, "var:", out);
                 self.format_sh_impl(var, indent + 2, out);
@@ -487,35 +485,35 @@ impl ActionsParser {
                 self.push_line(indent + 1, "body:", out);
                 self.format_sh_impl(body, indent + 2, out);
             }
-            crate::actions_parser::sh_parser::sh_ast::ShAstNode::FunctionDef { name, body } => {
+            crate::parser::sh_parser::sh_ast::ShAstNode::FunctionDef { name, body } => {
                 self.push_line(indent, "FunctionDef", out);
                 self.push_line(indent + 1, "name:", out);
                 self.format_sh_impl(name, indent + 2, out);
                 self.push_line(indent + 1, "body:", out);
                 self.format_sh_impl(body, indent + 2, out);
             }
-            crate::actions_parser::sh_parser::sh_ast::ShAstNode::Subshell { body } => {
+            crate::parser::sh_parser::sh_ast::ShAstNode::Subshell { body } => {
                 self.push_line(indent, "Subshell", out);
                 self.format_sh_impl(body, indent + 1, out);
             }
-            crate::actions_parser::sh_parser::sh_ast::ShAstNode::CommandSubstitution { body } => {
+            crate::parser::sh_parser::sh_ast::ShAstNode::CommandSubstitution { body } => {
                 self.push_line(indent, "CommandSubstitution", out);
                 self.format_sh_impl(body, indent + 1, out);
             }
-            crate::actions_parser::sh_parser::sh_ast::ShAstNode::Group { body } => {
+            crate::parser::sh_parser::sh_ast::ShAstNode::Group { body } => {
                 self.push_line(indent, "Group", out);
                 self.format_sh_impl(body, indent + 1, out);
             }
-            crate::actions_parser::sh_parser::sh_ast::ShAstNode::Word(s) => {
+            crate::parser::sh_parser::sh_ast::ShAstNode::Word(s) => {
                 self.push_line(indent, &format!("Word {:?}", s), out);
             }
-            crate::actions_parser::sh_parser::sh_ast::ShAstNode::Assignment(s) => {
+            crate::parser::sh_parser::sh_ast::ShAstNode::Assignment(s) => {
                 self.push_line(indent, &format!("Assignment {:?}", s), out);
             }
-            crate::actions_parser::sh_parser::sh_ast::ShAstNode::Redir { op, body } => {
+            crate::parser::sh_parser::sh_ast::ShAstNode::Redir { op, body } => {
                 self.push_line(indent, &format!("Redir op={:?} body={:?}", op, body), out);
             }
-            crate::actions_parser::sh_parser::sh_ast::ShAstNode::Unknown => {
+            crate::parser::sh_parser::sh_ast::ShAstNode::Unknown => {
                 self.push_line(indent, "Unknown", out);
             }
         }
@@ -531,11 +529,7 @@ impl ActionsParser {
     fn parse_run_to_sh_ast(&mut self, source_map: &mut SourceMap, run: String) -> AstId {
         let run_source_id = source_map.add_sh_file(std::path::PathBuf::from("<run>"), run);
         let arena = std::mem::replace(&mut self.arena, AstArena::new());
-        match crate::actions_parser::sh_parser::parse_sh_with_arena(
-            source_map,
-            &run_source_id,
-            arena,
-        ) {
+        match crate::parser::sh_parser::parse_sh_with_arena(source_map, &run_source_id, arena) {
             Ok((program, arena)) => {
                 self.arena = arena;
                 program.list
@@ -552,7 +546,7 @@ impl ActionsParser {
                     .push(ActionsParseError::InvalidActions { message, location });
                 self.arena = err.arena;
                 self.arena
-                    .alloc_sh(crate::actions_parser::sh_parser::sh_ast::ShAstNode::Unknown)
+                    .alloc_sh(crate::parser::sh_parser::sh_ast::ShAstNode::Unknown)
             }
         }
     }
@@ -700,7 +694,7 @@ impl ActionsParser {
             ActionsAst::RunStep {
                 run: self
                     .arena
-                    .alloc_sh(crate::actions_parser::sh_parser::sh_ast::ShAstNode::Unknown),
+                    .alloc_sh(crate::parser::sh_parser::sh_ast::ShAstNode::Unknown),
                 name,
                 id,
                 if_cond,
@@ -943,15 +937,15 @@ pub(crate) fn format_actions_tree(arena: &AstArena, root: &AstId) -> String {
 
 #[cfg(test)]
 mod actions_parser_tests {
-    use crate::actions_parser::actions_ast::{
+    use crate::parser::actions_ast::{
         ActionsAst, Concurrency, Container, RunsOn, ScalarValue, StringOrArray,
     };
-    use crate::actions_parser::parser::ActionsParser;
+    use crate::parser::parser::ActionsParser;
 
     #[test]
     fn test() {
         let mut parser = ActionsParser::new();
-        let mut source_map = crate::actions_parser::source_map::SourceMap::new();
+        let mut source_map = crate::parser::source_map::SourceMap::new();
         let s = r#"name: Unit Test
 
 on:
@@ -984,7 +978,7 @@ jobs:
     #[test]
     fn parse_extended_fields() {
         let mut parser = ActionsParser::new();
-        let mut source_map = crate::actions_parser::source_map::SourceMap::new();
+        let mut source_map = crate::parser::source_map::SourceMap::new();
         let s = r#"
 name: CI
 run-name: Build ${{ github.ref }}
@@ -1053,7 +1047,7 @@ jobs:
                 assert_eq!(defaults.run_shell.as_deref(), Some("bash"));
                 assert_eq!(defaults.run_working_directory.as_deref(), Some("./app"));
                 match permissions.as_ref().unwrap() {
-                    crate::actions_parser::actions_ast::Permissions::String(s) => {
+                    crate::parser::actions_ast::Permissions::String(s) => {
                         assert_eq!(s, "read-all");
                     }
                     _ => panic!("unexpected permissions"),
@@ -1118,7 +1112,7 @@ jobs:
 
     #[test]
     fn invalid_inputs_are_collected() {
-        let mut source_map = crate::actions_parser::source_map::SourceMap::new();
+        let mut source_map = crate::parser::source_map::SourceMap::new();
         let s = r#"
 name: Bad
 on: [push, 1]
@@ -1134,8 +1128,8 @@ jobs:
             s.to_string(),
         );
         let (root, arena, errors) =
-            crate::actions_parser::parse_actions_yaml(&mut source_map, &source_id).unwrap();
-        let tree = crate::actions_parser::format_actions_tree(&arena, &root);
+            crate::parser::parse_actions_yaml(&mut source_map, &source_id).unwrap();
+        let tree = crate::parser::format_actions_tree(&arena, &root);
         assert!(!tree.is_empty());
         assert!(!errors.is_empty());
     }
